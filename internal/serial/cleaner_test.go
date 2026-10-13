@@ -97,6 +97,26 @@ func TestCleanTerminalLine(t *testing.T) {
 			input:    "enable \x1b[1D \x1b[J\x1b[1D \x1b[J: enable target",
 			expected: "enable   : enable target",
 		},
+		{
+			name:     "active input buffer cleared by carriage return and erase line before log",
+			input:    "os_msg enable_logging\r\x1b[K[    368.331] <wrn> nxp_wifi: WLAN: Unknown Event: 5",
+			expected: "[    368.331] <wrn> nxp_wifi: WLAN: Unknown Event: 5",
+		},
+		{
+			name:     "prompt with active input buffer cleared by carriage return before log",
+			input:    "uart:~$ os_msg enable_logging\r\x1b[K[    368.331] <inf> wpa_supp: BG scan stopped",
+			expected: "[    368.331] <inf> wpa_supp: BG scan stopped",
+		},
+		{
+			name:     "prompt with active input buffer cleared by ANSI cursor back and erase before log",
+			input:    "uart:~$ os_msg enable_logging\x1b[32D\x1b[J[    368.331] <inf> wpa_supp: BG scan stopped",
+			expected: "[    368.331] <inf> wpa_supp: BG scan stopped",
+		},
+		{
+			name:     "active input buffer followed by prompt redraw",
+			input:    "os_msg enable_logging\ruart:~$ os_msg enable_logging",
+			expected: "os_msg enable_logging",
+		},
 	}
 
 	for _, tc := range tests {

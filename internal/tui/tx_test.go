@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/brenoniehues/oh-my-logs/internal/filter"
+	"github.com/brenoniehues/oh-my-logs/internal/parser"
 	"github.com/brenoniehues/oh-my-logs/internal/record"
 	"github.com/brenoniehues/oh-my-logs/internal/serial"
 	tea "github.com/charmbracelet/bubbletea"
@@ -662,6 +663,54 @@ func TestShellInteractiveMode_NoTabCompletionWithoutTabPress(t *testing.T) {
 	// shellInput must REMAIN strictly "os_msg" and NOT be polluted or overwritten by incoming text
 	if m.shellInput.Value != "os_msg" {
 		t.Errorf("expected shellInput to remain %q, but got corrupted value: %q", "os_msg", m.shellInput.Value)
+	}
+}
+
+func TestShellInteractiveMode_AsyncLogsWithActiveInputNotPrefixed(t *testing.T) {
+	m := newTestModel()
+	zephyrParser, err := parser.NewRegexParser(`^\[\s*(?P<uptime>[^\]]+?)\s*\]\s+<(?P<level>[a-zA-Z]+)>\s+(?:(?P<module>[a-zA-Z0-9_.-]+):\s+)?(?P<message>.*)$`)
+	if err != nil {
+		t.Fatalf("failed to create regex parser: %v", err)
+	}
+	m.parser = zephyrParser
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+	m.mode = modeShellInteractive
+
+	// User types "os_msg enable_logging" into interactive shell input
+	m.shellInput.SetText("os_msg enable_logging")
+
+	// Embedded shell receives async logs while prompt is active, erasing line with \r\x1b[K
+	incoming := []string{
+		"os_msg enable_logging\r\x1b[K[    368.331] <wrn> nxp_wifi: WLAN: Unknown Event: 5",
+		"os_msg enable_logging\r\x1b[K[    368.331] <inf> wpa_supp: wifi_nxp: BG scan stopped",
+	}
+
+	for _, raw := range incoming {
+		updated, _ := m.Update(lineMsg(raw))
+		m = updated.(Model)
+	}
+
+	if m.buffer.Len() != 2 {
+		t.Fatalf("expected 2 records in buffer, got %d", m.buffer.Len())
+	}
+
+	all := m.buffer.All()
+	rec0 := all[0]
+	if strings.Contains(rec0.Raw, "os_msg enable_logging") {
+		t.Errorf("expected rec0 to not contain active input prefix, got: %q", rec0.Raw)
+	}
+	if rec0.Fields["module"] != "nxp_wifi" {
+		t.Errorf("expected rec0 module to be nxp_wifi, got: %q", rec0.Fields["module"])
+	}
+
+	rec1 := all[1]
+	if strings.Contains(rec1.Raw, "os_msg enable_logging") {
+		t.Errorf("expected rec1 to not contain active input prefix, got: %q", rec1.Raw)
+	}
+	if rec1.Fields["module"] != "wpa_supp" {
+		t.Errorf("expected rec1 module to be wpa_supp, got: %q", rec1.Fields["module"])
 	}
 }
 

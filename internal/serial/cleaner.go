@@ -7,11 +7,12 @@ import (
 )
 
 var (
-	// promptEraseRe matches an interactive prompt and the ANSI cursor-back and line-erasure
+	// promptEraseRe matches an interactive prompt (optionally followed by active user input
+	// in the shell's buffer) and the ANSI cursor-back, carriage-return, and line-erasure
 	// escape sequences sent by embedded shells (e.g. Zephyr CONFIG_SHELL=y, FreeRTOS)
 	// when clearing the active prompt to output an asynchronous log message.
-	// Example: "device:~$ \x1b[10D\x1b[J" or "uart:~$ \x1b[8D\x1b[K" or "prompt\r\x1b[K".
-	promptEraseRe = regexp.MustCompile(`^(?:(?:[$#]\s*[a-zA-Z0-9_.-]+[:>]?\s*|\[[a-zA-Z0-9_.-]+\](?::~?|~)?\s*[$#>]\s*|(?:[a-zA-Z0-9_.-]+@)?[a-zA-Z0-9_.-]+(?::~?|~)?[$#>]\s*)\s*(?:\x1b\[\d*D\s*(?:\x1b\[[0-2]?[JK]\s*)+|\r\s*(?:\x1b\[[0-2]?[JK]\s*)*)|\r\s*(?:\x1b\[[0-2]?[JK]\s*)*)`)
+	// Example: "device:~$ \x1b[10D\x1b[J", "device:~$ os_msg\x1b[16D\x1b[J", "uart:~$ os_msg\r\x1b[K".
+	promptEraseRe = regexp.MustCompile(`^(?:(?:(?:[$#]\s*[a-zA-Z0-9_.-]+[:>]?\s*|\[[a-zA-Z0-9_.-]+\](?::~?|~)?\s*[$#>]\s*|(?:[a-zA-Z0-9_.-]+@)?[a-zA-Z0-9_.-]+(?::~?|~)?[$#>]\s*)[^\x1b\r\n]*)\s*(?:\x1b\[\d*D\s*(?:\x1b\[[0-2]?[JK]\s*)+|\r\s*(?:\x1b\[[0-2]?[JK]\s*)*)|\r\s*(?:\x1b\[[0-2]?[JK]\s*)*)`)
 
 	// shellPromptRe matches leftover interactive shell prompts at the start of a line
 	// that were not followed by ANSI erasure codes.
@@ -95,8 +96,11 @@ func CleanTerminalLine(line string) string {
 		return ""
 	}
 
+	// 0. Resolve in-band carriage returns so overwritten lines or prompts cleared via \r reflect terminal display
+	cleaned := ResolveCarriageReturns(line)
+
 	// 1. Expand tabs so tabular shell layouts (help menus, subcommands) retain their column alignment
-	cleaned := ExpandTabs(line, 8)
+	cleaned = ExpandTabs(cleaned, 8)
 
 	// 2. Expand ANSI cursor-forward sequences so multiline completion columns (e.g. Zephyr shell) do not merge
 	cleaned = ExpandCursorForward(cleaned)
