@@ -975,6 +975,10 @@ func (m Model) handleShellInteractiveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// the entire string `val + ending`, which would result in command duplication (e.g. "os_msgos_msg").
 	if keyMatches(msg, m.keys.Confirm) || msg.Type == tea.KeyEnter {
 		val := m.shellInput.Value
+		cleanVal := serial.CleanTerminalLine(val)
+		if cleanVal != "" {
+			val = cleanVal
+		}
 		ending := m.txEnding.Suffix()
 		if ending == "" {
 			ending = "\r"

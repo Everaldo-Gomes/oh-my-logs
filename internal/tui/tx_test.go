@@ -600,4 +600,31 @@ func TestUnparsedRow_FullWidthSpanningAndGutter(t *testing.T) {
 	}
 }
 
+func TestShellInteractiveMode_KeystrokeEchoFiltered(t *testing.T) {
+	m := newTestModel()
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+	m.mode = modeShellInteractive
+
+	// Keystrokes echoed by MCU shell while typing
+	for _, ch := range []string{"o", "s", "_", "m", "s", "g"} {
+		updated, _ := m.Update(lineMsg(ch))
+		m = updated.(Model)
+	}
+
+	// None of the single-character keystroke echoes should have been added to the buffer
+	if m.buffer.Len() != 0 {
+		t.Errorf("expected keystroke echoes to be filtered out, got %d records in buffer", m.buffer.Len())
+	}
+
+	// Real multiline output from MCU should still be ingested normally
+	updated, _ := m.Update(lineMsg("os_msg: command not found"))
+	m = updated.(Model)
+	if m.buffer.Len() != 1 {
+		t.Errorf("expected real command output to be ingested, got %d records", m.buffer.Len())
+	}
+}
+
+
 

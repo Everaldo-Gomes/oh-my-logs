@@ -134,14 +134,16 @@ func (s *SerialSource) readLoop() {
 				}
 			}
 		} else {
-			// n == 0: Read timed out (25ms idle UART). If lineBuf contains partial data
-			// (e.g. an interactive shell prompt "uart:~$ os_"), flush it immediately so the TUI
-			// does not stall waiting for a newline that will never arrive.
+			// n == 0: Read timed out (25ms idle UART). If lineBuf contains an active shell prompt
+			// (e.g. "device:~$ os_"), flush it immediately so the TUI can update prompt & completion.
+			// Do NOT flush incomplete keystroke echoes (e.g. "o", "s") which are not prompts.
 			if len(lineBuf) > 0 {
 				lineStr := string(lineBuf)
-				lineBuf = lineBuf[:0]
-				if !emitLine(lineStr) {
-					return
+				if DetectShellPrompt(lineStr) != "" {
+					lineBuf = lineBuf[:0]
+					if !emitLine(lineStr) {
+						return
+					}
 				}
 			}
 		}

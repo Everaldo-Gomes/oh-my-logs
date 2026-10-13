@@ -253,3 +253,24 @@ func TestExtractPromptRemainder(t *testing.T) {
 	}
 }
 
+func TestResolveCarriageReturns(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"plain string", "plain string"},
+		{"trailing cr\r", "trailing cr"},
+		{"old\rnew line", "new line"},
+		{"first\rsecond\rthird", "third"},
+		{"os_msg\ruart:~$ os_msg", "uart:~$ os_msg"},
+	}
+
+	for _, tc := range cases {
+		actual := serial.ResolveCarriageReturns(tc.input)
+		if actual != tc.expected {
+			t.Errorf("ResolveCarriageReturns(%q) = %q, want %q", tc.input, actual, tc.expected)
+		}
+	}
+}
+
+

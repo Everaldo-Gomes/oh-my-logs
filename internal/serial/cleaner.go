@@ -138,14 +138,28 @@ func DetectShellPrompt(line string) string {
 	return strings.TrimSpace(m)
 }
 
+// ResolveCarriageReturns handles in-band carriage returns (\r) in serial streams,
+// taking the text after the last carriage return to reflect what a terminal displays.
+func ResolveCarriageReturns(s string) string {
+	if !strings.ContainsRune(s, '\r') {
+		return s
+	}
+	trimmed := strings.TrimRight(s, "\r")
+	if !strings.ContainsRune(trimmed, '\r') {
+		return trimmed
+	}
+	lastCR := strings.LastIndexByte(trimmed, '\r')
+	return trimmed[lastCR+1:]
+}
+
 // ExtractPromptRemainder inspects line to determine if it begins with an interactive shell prompt.
 // If matched, it returns the detected prompt and any trailing command line / autocomplete buffer.
 func ExtractPromptRemainder(line string) (prompt string, remainder string, matched bool) {
-	s := line
+	s := ResolveCarriageReturns(line)
 	s = ExpandCursorForward(s)
 	s = promptEraseRe.ReplaceAllLiteralString(s, "")
 	s = residualCursorRe.ReplaceAllLiteralString(s, "")
-	s = strings.TrimLeft(s, "\r")
+	s = strings.TrimLeft(s, "\r\n ")
 	s = residualCursorRe.ReplaceAllLiteralString(s, "")
 	loc := shellPromptRe.FindStringIndex(s)
 	if loc == nil {

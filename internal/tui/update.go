@@ -187,6 +187,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.mode == modeShellInteractive {
 				cleanRemainder := serial.CleanTerminalLine(remainder)
+				if m.lastTXCommand != "" && strings.TrimSpace(cleanRemainder) == m.lastTXCommand {
+					m.lastTXCommand = ""
+					if m.connState == ConnConnected && m.source != nil {
+						return m, listenToSource(m.source)
+					}
+					return m, nil
+				}
 				isLog := false
 				if m.parser != nil && cleanRemainder != "" {
 					parsedRec, err := m.parser.Parse(cleanRemainder)
@@ -222,6 +229,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.lastTXCommand = ""
+		}
+
+		// In interactive shell mode, filter out individual keystroke character echoes (e.g. "o", "s", "_")
+		// so typing never pollutes the log table. Keystrokes are displayed in the interactive input bar.
+		if m.mode == modeShellInteractive && len(strings.TrimSpace(line)) <= 3 {
+			isLog := false
+			if m.parser != nil {
+				parsedRec, err := m.parser.Parse(line)
+				if err == nil && parsedRec.Fields["level"] != "" {
+					isLog = true
+				}
+			}
+			if !isLog {
+				if m.connState == ConnConnected && m.source != nil {
+					return m, listenToSource(m.source)
+				}
+				return m, nil
+			}
 		}
 
 		if strings.TrimSpace(line) == "" {
