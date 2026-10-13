@@ -217,9 +217,10 @@ type Model struct {
 	txEnding serial.LineEnding
 
 	// Interactive Shell Passthrough mode ("minicom-inside-oml")
-	shellPrompt   string // detected device shell prompt (e.g. "device:~$ " or "$device")
-	shellInput    TextInput
-	lastTXCommand string // last transmitted command to suppress duplicate MCU device echo
+	shellPrompt      string // detected device shell prompt (e.g. "device:~$ " or "$device")
+	shellInput       TextInput
+	shellAwaitingTab bool   // true when user pressed Tab and is awaiting remote shell completion token
+	lastTXCommand    string // last transmitted command to suppress duplicate MCU device echo
 
 	// Bench marker annotation prompt
 	markerInput      TextInput

@@ -495,13 +495,22 @@ func TestShellInteractiveMode_PromptCompletionSync(t *testing.T) {
 	m.connState = ConnConnected
 	m.mode = modeShellInteractive
 
-	// Engineer typed 'os'
+	// Engineer typed 'os' and pressed Tab to request autocompletion
 	m.shellInput.SetText("os")
-
-	// Device responds with prompt and completed token 'os_'
-	updated, _ := m.Update(lineMsg("uart:~$ os_"))
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = updated.(Model)
 
+	if !m.shellAwaitingTab {
+		t.Errorf("expected shellAwaitingTab to be true after pressing Tab")
+	}
+
+	// Device responds with prompt and completed token 'os_'
+	updated, _ = m.Update(lineMsg("uart:~$ os_"))
+	m = updated.(Model)
+
+	if m.shellAwaitingTab {
+		t.Errorf("expected shellAwaitingTab to be reset to false after completion sync")
+	}
 	if m.shellPrompt != "uart:~$ " {
 		t.Errorf("expected shellPrompt 'uart:~$ ', got %q", m.shellPrompt)
 	}
@@ -625,6 +634,37 @@ func TestShellInteractiveMode_KeystrokeEchoFiltered(t *testing.T) {
 		t.Errorf("expected real command output to be ingested, got %d records", m.buffer.Len())
 	}
 }
+
+func TestShellInteractiveMode_NoTabCompletionWithoutTabPress(t *testing.T) {
+	m := newTestModel()
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+	m.mode = modeShellInteractive
+
+	// User types a command but DOES NOT press Tab
+	m.shellInput.SetText("os_msg")
+
+	// Device prints multiline subcommand help text where some lines might match prompt-like tokens
+	helpLines := []string{
+		"os_msg - OS Message module APIs test commands",
+		"Subcommands:",
+		"  publish                       : Publish a message",
+		"  )<key0>=<value0>,<key1>=<value1>,....",
+		"  uart:~$ help",
+	}
+
+	for _, l := range helpLines {
+		updated, _ := m.Update(lineMsg(l))
+		m = updated.(Model)
+	}
+
+	// shellInput must REMAIN strictly "os_msg" and NOT be polluted or overwritten by incoming text
+	if m.shellInput.Value != "os_msg" {
+		t.Errorf("expected shellInput to remain %q, but got corrupted value: %q", "os_msg", m.shellInput.Value)
+	}
+}
+
 
 
 

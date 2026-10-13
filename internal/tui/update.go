@@ -185,7 +185,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if prompt != "" {
 				m.shellPrompt = prompt + " "
 			}
-			if m.mode == modeShellInteractive {
+			if m.mode == modeShellInteractive && m.shellAwaitingTab {
+				m.shellAwaitingTab = false
 				cleanRemainder := serial.CleanTerminalLine(remainder)
 				if m.lastTXCommand != "" && strings.TrimSpace(cleanRemainder) == m.lastTXCommand {
 					m.lastTXCommand = ""
