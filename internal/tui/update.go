@@ -181,20 +181,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// ── New line from source ─────────────────────────────────────────────────
 	case lineMsg:
 		rawStr := string(msg)
-		if detected := serial.DetectShellPrompt(rawStr); detected != "" {
-			m.shellPrompt = detected + " "
+		if prompt, remainder, ok := serial.ExtractPromptRemainder(rawStr); ok {
+			if prompt != "" {
+				m.shellPrompt = prompt + " "
+			}
+			if m.mode == modeShellInteractive {
+				cleanRemainder := serial.CleanTerminalLine(remainder)
+				isLog := false
+				if m.parser != nil && cleanRemainder != "" {
+					parsedRec, err := m.parser.Parse(cleanRemainder)
+					if err == nil && parsedRec.Fields["level"] != "" {
+						isLog = true
+					}
+				}
+				if !isLog {
+					if cleanRemainder != "" {
+						m.shellInput.SetText(cleanRemainder)
+					}
+					if m.connState == ConnConnected && m.source != nil {
+						return m, listenToSource(m.source)
+					}
+					return m, nil
+				}
+			}
 		}
+
 		line := serial.CleanTerminalLine(rawStr)
 		if m.lineStripRe != nil {
 			line = m.lineStripRe.ReplaceAllLiteralString(line, "")
-			line = strings.TrimSpace(line)
+			line = strings.TrimRight(line, "\r\n")
 		}
-		if line == "" {
+
+		if m.lastTXCommand != "" {
+			trimmedLine := strings.TrimSpace(line)
+			if trimmedLine == m.lastTXCommand {
+				m.lastTXCommand = ""
+				if m.connState == ConnConnected && m.source != nil {
+					return m, listenToSource(m.source)
+				}
+				return m, nil
+			}
+			m.lastTXCommand = ""
+		}
+
+		if strings.TrimSpace(line) == "" {
 			if m.connState == ConnConnected && m.source != nil {
 				return m, listenToSource(m.source)
 			}
 			return m, nil
 		}
+
 		r, parsedTs := parseLineWithTimestampFallback(m.parser, line)
 		if !parsedTs.IsZero() && r.Timestamp.IsZero() {
 			r.Timestamp = parsedTs

@@ -982,6 +982,7 @@ func (m Model) handleShellInteractiveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		_, _ = m.source.Write([]byte(ending))
 		if val != "" {
 			m.recordTXMessage(val)
+			m.lastTXCommand = strings.TrimSpace(val)
 			if m.shellInput.AddHistory(val) {
 				m.saveSettings()
 			}

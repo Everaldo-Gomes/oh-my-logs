@@ -151,3 +151,105 @@ func TestExpandTabs(t *testing.T) {
 		})
 	}
 }
+
+func TestExpandCursorForward(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "no cursor forward",
+			input:    "plain string",
+			expected: "plain string",
+		},
+		{
+			name:     "single default cursor forward without digit",
+			input:    "col1\x1b[Ccol2",
+			expected: "col1 col2",
+		},
+		{
+			name:     "explicit forward 10 positions",
+			input:    "os_ble\x1b[10Cos_comm",
+			expected: "os_ble          os_comm",
+		},
+		{
+			name:     "multiline autocompletion row",
+			input:    "os_ble\x1b[10Cos_comm\x1b[10Cos_crypto\x1b[10Cos_dataset",
+			expected: "os_ble          os_comm          os_crypto          os_dataset",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := serial.ExpandCursorForward(tc.input)
+			if actual != tc.expected {
+				t.Errorf("ExpandCursorForward(%q) = %q, want %q", tc.input, actual, tc.expected)
+			}
+		})
+	}
+}
+
+func TestExtractPromptRemainder(t *testing.T) {
+	cases := []struct {
+		name          string
+		input         string
+		wantPrompt    string
+		wantRemainder string
+		wantMatched   bool
+	}{
+		{
+			name:          "pure prompt",
+			input:         "board:~$ ",
+			wantPrompt:    "board:~$",
+			wantRemainder: "",
+			wantMatched:   true,
+		},
+		{
+			name:          "prompt with partial command buffer",
+			input:         "board:~$ os_",
+			wantPrompt:    "board:~$",
+			wantRemainder: "os_",
+			wantMatched:   true,
+		},
+		{
+			name:          "prompt with completed command",
+			input:         "uart:~$ os_msg",
+			wantPrompt:    "uart:~$",
+			wantRemainder: "os_msg",
+			wantMatched:   true,
+		},
+		{
+			name:          "prompt with leading carriage return",
+			input:         "\ruart:~$ os_msg",
+			wantPrompt:    "uart:~$",
+			wantRemainder: "os_msg",
+			wantMatched:   true,
+		},
+		{
+			name:          "bracketed prompt with completion",
+			input:         "[myboard]:~$ status",
+			wantPrompt:    "[myboard]:~$",
+			wantRemainder: "status",
+			wantMatched:   true,
+		},
+		{
+			name:          "normal log line does not match",
+			input:         "[   12.345] <inf> sensor: ok",
+			wantPrompt:    "",
+			wantRemainder: "",
+			wantMatched:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt, rem, matched := serial.ExtractPromptRemainder(tc.input)
+			if matched != tc.wantMatched || prompt != tc.wantPrompt || rem != tc.wantRemainder {
+				t.Errorf("ExtractPromptRemainder(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					tc.input, prompt, rem, matched, tc.wantPrompt, tc.wantRemainder, tc.wantMatched)
+			}
+		})
+	}
+}
+

@@ -488,3 +488,116 @@ func TestShellInteractiveMode_TabForwardingAndCharacterStreaming(t *testing.T) {
 	}
 }
 
+func TestShellInteractiveMode_PromptCompletionSync(t *testing.T) {
+	m := newTestModel()
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+	m.mode = modeShellInteractive
+
+	// Engineer typed 'os'
+	m.shellInput.SetText("os")
+
+	// Device responds with prompt and completed token 'os_'
+	updated, _ := m.Update(lineMsg("uart:~$ os_"))
+	m = updated.(Model)
+
+	if m.shellPrompt != "uart:~$ " {
+		t.Errorf("expected shellPrompt 'uart:~$ ', got %q", m.shellPrompt)
+	}
+	if m.shellInput.Value != "os_" {
+		t.Errorf("expected shellInput to be updated to 'os_', got %q", m.shellInput.Value)
+	}
+	// Verify prompt wasn't dumped into the log buffer as a fake record
+	if m.buffer.Len() != 0 {
+		t.Errorf("expected buffer to remain empty of prompt artifacts, got %d records", m.buffer.Len())
+	}
+}
+
+func TestShellInteractiveMode_DuplicateEchoSuppression(t *testing.T) {
+	m := newTestModel()
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+	m.mode = modeShellInteractive
+
+	// Send command
+	m.shellInput.SetText("hi")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Buffer has TX record
+	if m.buffer.Len() != 1 {
+		t.Fatalf("expected 1 record (TX message), got %d", m.buffer.Len())
+	}
+
+	// Device echoes 'hi'
+	updated, _ = m.Update(lineMsg("hi"))
+	m = updated.(Model)
+
+	// Duplicate echo must be suppressed, buffer still at 1
+	if m.buffer.Len() != 1 {
+		t.Errorf("expected duplicate echo 'hi' to be suppressed, buffer len = %d", m.buffer.Len())
+	}
+
+	// Device sends command output
+	updated, _ = m.Update(lineMsg("hi: command not found"))
+	m = updated.(Model)
+
+	// Output is recorded!
+	if m.buffer.Len() != 2 {
+		t.Fatalf("expected 2 records, got %d", m.buffer.Len())
+	}
+	if !strings.Contains(m.buffer.All()[1].Raw, "command not found") {
+		t.Errorf("expected command not found output, got %q", m.buffer.All()[1].Raw)
+	}
+}
+
+func TestUnparsedRow_FullWidthSpanningAndGutter(t *testing.T) {
+	m := newTestModel()
+	cols := []record.Column{
+		{Field: "uptime", Title: "Uptime", Width: 10, Style: "uptime"},
+		{Field: "level", Title: "Level", Width: 6, Style: "level"},
+		{Field: "module", Title: "Module", Width: 12, Style: "identifier"},
+		{Field: "message", Title: "Message", Width: 0, Style: "primary"},
+	}
+	m.columns = cols
+	m.width = 100
+	m.height = 20
+	m.recalcLayout()
+
+	// Ingest a standard log record (parsed with uptime, level, module)
+	m.ingestRecord(record.Record{
+		Raw: "[   10.839] <inf> os_msg: test log",
+		Fields: map[string]string{
+			"uptime":  "10.839",
+			"level":   "inf",
+			"module":  "os_msg",
+			"message": "test log",
+		},
+	})
+
+	// Ingest an unparsed non-log subcommand help record
+	unparsedHelp := "  set_conv_group                : Set Conversation Group ID"
+	m.ingestRecord(record.Record{
+		Raw: unparsedHelp,
+		Fields: map[string]string{
+			"_raw":    unparsedHelp,
+			"message": unparsedHelp,
+		},
+	})
+
+	view := m.viewTable()
+
+	// Verify the unparsed row renders with gutter separator '│'
+	if !strings.Contains(view, "│") {
+		t.Errorf("expected viewTable to render unparsed row gutter indicator '│', got:\n%s", view)
+	}
+
+	// Verify the unparsed subcommand text appears in view
+	if !strings.Contains(view, "set_conv_group") {
+		t.Errorf("expected viewTable to contain unparsed help text 'set_conv_group', got:\n%s", view)
+	}
+}
+
+

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	goserial "go.bug.st/serial"
 )
@@ -66,17 +67,35 @@ func (s *SerialSource) readLoop() {
 	defer close(s.lines)
 	defer close(s.errors)
 
-	reader := bufio.NewReader(s.port)
-	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			cleanLine := strings.TrimRight(line, "\r\n")
-			select {
-			case <-s.stop:
-				return
-			case s.lines <- cleanLine:
-			}
+	// Set a small read timeout so the reader can emit partial interactive prompts
+	// (e.g. "uart:~$ os_") when UART goes idle waiting for engineer input, rather
+	// than blocking indefinitely waiting for a trailing newline.
+	_ = s.port.SetReadTimeout(25 * time.Millisecond)
+
+	buf := make([]byte, 1024)
+	var lineBuf []byte
+
+	emitLine := func(l string) bool {
+		cleanLine := strings.TrimRight(l, "\r\n")
+		if cleanLine == "" {
+			return true
 		}
+		select {
+		case <-s.stop:
+			return false
+		case s.lines <- cleanLine:
+			return true
+		}
+	}
+
+	for {
+		select {
+		case <-s.stop:
+			return
+		default:
+		}
+
+		n, err := s.port.Read(buf)
 		if err != nil {
 			select {
 			case <-s.stop:
@@ -88,6 +107,43 @@ func (s *SerialSource) readLoop() {
 			default:
 			}
 			return
+		}
+
+		if n > 0 {
+			chunk := buf[:n]
+			for len(chunk) > 0 {
+				idx := -1
+				for i, b := range chunk {
+					if b == '\n' {
+						idx = i
+						break
+					}
+				}
+
+				if idx >= 0 {
+					lineBuf = append(lineBuf, chunk[:idx]...)
+					lineStr := string(lineBuf)
+					lineBuf = lineBuf[:0]
+					if !emitLine(lineStr) {
+						return
+					}
+					chunk = chunk[idx+1:]
+				} else {
+					lineBuf = append(lineBuf, chunk...)
+					break
+				}
+			}
+		} else {
+			// n == 0: Read timed out (25ms idle UART). If lineBuf contains partial data
+			// (e.g. an interactive shell prompt "uart:~$ os_"), flush it immediately so the TUI
+			// does not stall waiting for a newline that will never arrive.
+			if len(lineBuf) > 0 {
+				lineStr := string(lineBuf)
+				lineBuf = lineBuf[:0]
+				if !emitLine(lineStr) {
+					return
+				}
+			}
 		}
 	}
 }
