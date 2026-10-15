@@ -11,18 +11,62 @@ import (
 
 // IPCHandler implements ipc.Handler for an active TUI Model.
 type IPCHandler struct {
-	m *Model
+	m      *Model
+	shared *SharedState
 }
 
 var _ ipc.Handler = (*IPCHandler)(nil)
 
 // NewIPCHandler wraps the TUI model for IPC service.
 func NewIPCHandler(m *Model) *IPCHandler {
-	return &IPCHandler{m: m}
+	var shared *SharedState
+	if m != nil {
+		shared = m.shared
+	}
+	return &IPCHandler{m: m, shared: shared}
+}
+
+// NewIPCHandlerWithShared creates an IPCHandler directly from a SharedState reference.
+func NewIPCHandlerWithShared(shared *SharedState) *IPCHandler {
+	return &IPCHandler{shared: shared}
 }
 
 // GetStatus returns metadata regarding active port and buffer stats.
 func (h *IPCHandler) GetStatus() map[string]interface{} {
+	if h.shared != nil {
+		h.shared.mu.RLock()
+		defer h.shared.mu.RUnlock()
+
+		connected := h.shared.ConnState == ConnConnected
+		port := h.shared.SerialCfg.Port
+		baud := h.shared.SerialCfg.Baud
+		profileName := "raw"
+		if h.shared.Profile != nil && h.shared.Profile.Name != "" {
+			profileName = h.shared.Profile.Name
+		}
+
+		bufLen := 0
+		bufCap := 0
+		if h.shared.Buffer != nil {
+			bufLen = h.shared.Buffer.Len()
+			bufCap = h.shared.Buffer.Cap()
+		}
+
+		return map[string]interface{}{
+			"connected":    connected,
+			"port":         port,
+			"baud":         baud,
+			"profile":      profileName,
+			"buffer_count": bufLen,
+			"buffer_cap":   bufCap,
+			"source_type":  "tui",
+		}
+	}
+
+	if h.m == nil {
+		return map[string]interface{}{"connected": false, "source_type": "tui"}
+	}
+
 	connected := h.m.connState == ConnConnected
 	port := h.m.serialCfg.Port
 	baud := h.m.serialCfg.Baud
@@ -51,11 +95,19 @@ func (h *IPCHandler) GetStatus() map[string]interface{} {
 
 // GetRecentLogs returns recent records from the TUI's buffer, matching filters.
 func (h *IPCHandler) GetRecentLogs(count int, minLevel, module string) []record.Record {
-	if h.m.buffer == nil {
+	var buf *record.Buffer
+	if h.shared != nil {
+		h.shared.mu.RLock()
+		buf = h.shared.Buffer
+		h.shared.mu.RUnlock()
+	} else if h.m != nil {
+		buf = h.m.buffer
+	}
+	if buf == nil {
 		return nil
 	}
 
-	all := h.m.buffer.All()
+	all := buf.All()
 	if len(all) == 0 {
 		return nil
 	}
@@ -69,11 +121,19 @@ func (h *IPCHandler) GetRecentLogs(count int, minLevel, module string) []record.
 
 // SearchLogs searches the TUI's buffer for matching records.
 func (h *IPCHandler) SearchLogs(query string, isRegex bool, maxResults int) []record.Record {
-	if h.m.buffer == nil || query == "" {
+	var buf *record.Buffer
+	if h.shared != nil {
+		h.shared.mu.RLock()
+		buf = h.shared.Buffer
+		h.shared.mu.RUnlock()
+	} else if h.m != nil {
+		buf = h.m.buffer
+	}
+	if buf == nil || query == "" {
 		return nil
 	}
 
-	all := h.m.buffer.All()
+	all := buf.All()
 	queryLower := strings.ToLower(query)
 
 	var matches []record.Record
@@ -100,7 +160,18 @@ func (h *IPCHandler) SearchLogs(query string, isRegex bool, maxResults int) []re
 
 // SendSerialCommand writes bytes over the TUI's active serial TX channel and captures response lines.
 func (h *IPCHandler) SendSerialCommand(command string, waitMS int, ending string) (int, []record.Record, error) {
-	if h.m.source == nil {
+	var src serial.Source
+	var buf *record.Buffer
+	if h.shared != nil {
+		h.shared.mu.RLock()
+		src = h.shared.Source
+		buf = h.shared.Buffer
+		h.shared.mu.RUnlock()
+	} else if h.m != nil {
+		src = h.m.source
+		buf = h.m.buffer
+	}
+	if src == nil {
 		return 0, nil, nil
 	}
 
@@ -122,11 +193,11 @@ func (h *IPCHandler) SendSerialCommand(command string, waitMS int, ending string
 	}
 
 	countBefore := 0
-	if h.m.buffer != nil {
-		countBefore = h.m.buffer.Len()
+	if buf != nil {
+		countBefore = buf.Len()
 	}
 
-	n, err := h.m.source.Write(payload)
+	n, err := src.Write(payload)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -137,8 +208,8 @@ func (h *IPCHandler) SendSerialCommand(command string, waitMS int, ending string
 	time.Sleep(time.Duration(waitMS) * time.Millisecond)
 
 	var newLines []record.Record
-	if h.m.buffer != nil {
-		all := h.m.buffer.All()
+	if buf != nil {
+		all := buf.All()
 		if len(all) > countBefore {
 			newLines = all[countBefore:]
 		}

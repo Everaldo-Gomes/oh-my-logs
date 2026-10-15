@@ -159,6 +159,7 @@ func (m Model) disconnect() (Model, tea.Cmd) {
 	} else {
 		m.message = "Disconnected — port released (r to reconnect)"
 	}
+	m.syncSharedState()
 	return m, nil
 }
 
@@ -290,6 +291,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.source.Stop()
 				m.source = nil
 			}
+			m.syncSharedState()
 			if !m.manualDisconnect && m.serialCfg.Port != "" && !m.isFileSource && !m.isProcessSource && !m.isPipeSource {
 				m.reconnecting = true
 				m.message = "Device disconnected — auto-reconnecting…"
@@ -316,6 +318,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.source.Stop()
 				m.source = nil
 			}
+			m.syncSharedState()
 			if !m.manualDisconnect && m.serialCfg.Port != "" && !m.isFileSource && !m.isProcessSource && !m.isPipeSource {
 				if !m.reconnecting {
 					m.reconnecting = true
@@ -328,6 +331,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.isPipeSource {
 				m.message = "Standard input stream ended"
 			}
+		} else {
+			m.syncSharedState()
 		}
 		return m, nil
 
@@ -378,6 +383,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reconnecting = false
 		m.manualDisconnect = false
 		m.mode = modeNormal
+		m.syncSharedState()
 		return m, tea.Batch(listenToSource(m.source), listenToSourceErrors(m.source))
 
 	// ── Mini-game physics tick ───────────────────────────────────────────────

@@ -1,7 +1,6 @@
 package ipc
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -79,18 +78,12 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	scanner := bufio.NewScanner(conn)
+	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
+	for {
 		var req Request
-		if err := json.Unmarshal(line, &req); err != nil {
-			_ = encoder.Encode(Response{Success: false, Error: "invalid request payload"})
+		if err := decoder.Decode(&req); err != nil {
 			return
 		}
 

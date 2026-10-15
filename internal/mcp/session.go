@@ -1,7 +1,10 @@
 package mcp
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -56,12 +59,127 @@ func NewSession(appCfg *config.AppConfig, bufCap int) *Session {
 	sockAddr := ipc.SocketPath(configDir)
 	client := ipc.NewClient(sockAddr)
 
-	return &Session{
+	s := &Session{
 		appCfg:    appCfg,
 		buffer:    record.NewBuffer(bufCap),
 		parser:    parser.NewRawParser(),
 		ipcClient: client,
 	}
+
+	// If an active TUI session is running, hydrate the in-memory buffer
+	// with all pre-existing records so Gemini / MCP has immediate access to history!
+	if client.IsAvailable() {
+		s.SyncFromIPC()
+	} else if appCfg != nil && appCfg.LogsDir != "" {
+		s.SeedFromRecentDiskLog(2 * time.Hour)
+	}
+
+	return s
+}
+
+// SyncFromIPC synchronizes the local session state and in-memory buffer
+// with an active running TUI instance.
+func (s *Session) SyncFromIPC() {
+	if s.ipcClient == nil || !s.ipcClient.IsAvailable() {
+		return
+	}
+
+	// 1. Fetch remote status
+	stat, err := s.ipcClient.GetStatus()
+	if err == nil {
+		s.mu.Lock()
+		if prof, ok := stat["profile"].(string); ok && prof != "" {
+			s.profileName = prof
+		}
+		if p, ok := stat["port"].(string); ok && p != "" {
+			s.serialCfg.Port = p
+		}
+		if b, ok := stat["baud"].(float64); ok && b > 0 {
+			s.serialCfg.Baud = int(b)
+		}
+		s.mu.Unlock()
+	}
+
+	// 2. Fetch existing in-memory logs up to buffer capacity
+	bufCap := s.buffer.Cap()
+	if bufCap <= 0 {
+		bufCap = record.DefaultCapacity
+	}
+	logs, err := s.ipcClient.GetRecentLogs(bufCap, "", "")
+	if err == nil && len(logs) > 0 {
+		s.mu.Lock()
+		s.buffer.Clear()
+		for _, r := range logs {
+			s.buffer.Add(r)
+		}
+		s.lineCount = int64(len(logs))
+		s.mu.Unlock()
+	}
+}
+
+// SeedFromRecentDiskLog attempts to load records from the most recently modified log file
+// in the logs directory into the in-memory buffer.
+func (s *Session) SeedFromRecentDiskLog(maxAge time.Duration) (string, int) {
+	if s.appCfg == nil || s.appCfg.LogsDir == "" {
+		return "", 0
+	}
+
+	entries, err := os.ReadDir(s.appCfg.LogsDir)
+	if err != nil {
+		return "", 0
+	}
+
+	var newestPath string
+	var newestMod time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if maxAge > 0 && time.Since(info.ModTime()) > maxAge {
+			continue
+		}
+		if info.ModTime().After(newestMod) {
+			newestMod = info.ModTime()
+			newestPath = filepath.Join(s.appCfg.LogsDir, entry.Name())
+		}
+	}
+
+	if newestPath == "" {
+		return "", 0
+	}
+
+	f, err := os.Open(newestPath)
+	if err != nil {
+		return "", 0
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	count := 0
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		r := record.Record{
+			ID:        uint64(count + 1),
+			Raw:       line,
+			Timestamp: newestMod,
+		}
+		s.buffer.Add(r)
+		count++
+	}
+	s.lineCount = int64(count)
+	return newestPath, count
 }
 
 // IsIPCAvailable checks if an active TUI instance is servicing requests.

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/brenoniehues/oh-my-logs/internal/config"
@@ -311,6 +312,20 @@ type Model struct {
 
 	// IPC Server
 	ipcServer io.Closer
+
+	// Shared live state (thread-safe, shared across Bubble Tea model copies and IPC server)
+	shared *SharedState
+}
+
+// SharedState maintains synchronized live state between the Bubble Tea loop
+// and background services (like the IPC server).
+type SharedState struct {
+	mu        sync.RWMutex
+	Buffer    *record.Buffer
+	Source    serial.Source
+	ConnState ConnState
+	SerialCfg serial.Config
+	Profile   *parser.Profile
 }
 
 // New creates a new Model with sensible defaults.
@@ -543,7 +558,29 @@ func New(
 		m.rebuildDecodersPipeline(profile.Decoders)
 	}
 
+	m.shared = &SharedState{
+		Buffer:    buf,
+		Source:    src,
+		ConnState: initState,
+		SerialCfg: cfg,
+		Profile:   profile,
+	}
+
 	return m
+}
+
+// syncSharedState updates the shared live state with the current model state.
+func (m *Model) syncSharedState() {
+	if m.shared == nil {
+		return
+	}
+	m.shared.mu.Lock()
+	defer m.shared.mu.Unlock()
+	m.shared.Buffer = m.buffer
+	m.shared.Source = m.source
+	m.shared.ConnState = m.connState
+	m.shared.SerialCfg = m.serialCfg
+	m.shared.Profile = m.profile
 }
 
 // SetProjectDecoders configures project-level decoders and rebuilds the active pipeline.

@@ -1,6 +1,8 @@
 package ipc
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -105,3 +107,44 @@ func TestIPCServerAndClient(t *testing.T) {
 		t.Fatalf("requestHandover failed: %v", err)
 	}
 }
+
+func TestIPCServerAndClient_LargePayload(t *testing.T) {
+	sockAddr := filepath.Join(os.TempDir(), fmt.Sprintf("oml_lg_%d.sock", time.Now().UnixNano()))
+	defer os.Remove(sockAddr)
+
+	// Generate 3,000 records (~600KB - 1MB payload, well beyond the 64KB bufio.Scanner limit)
+	records := make([]record.Record, 3000)
+	for i := 0; i < 3000; i++ {
+		records[i] = record.Record{
+			ID:        uint64(i + 1),
+			Raw:       fmt.Sprintf("[2026-10-15 12:00:%02d.%03d] <inf> telemetry: sensor_%d reading value=%d status=OK payload_data_extra_padding_string", i/60, i%1000, i%16, i*42),
+			Timestamp: time.Now(),
+			Fields: map[string]string{
+				"level":   "INFO",
+				"module":  "telemetry",
+				"message": fmt.Sprintf("sensor_%d reading value=%d", i%16, i*42),
+			},
+		}
+	}
+
+	handler := &mockHandler{records: records}
+	srv, err := NewServer(sockAddr, handler)
+	if err != nil {
+		t.Fatalf("failed starting IPC server: %v", err)
+	}
+	defer srv.Close()
+
+	client := NewClient(sockAddr)
+	if !client.IsAvailable() {
+		t.Fatalf("client.IsAvailable returned false")
+	}
+
+	logs, err := client.GetRecentLogs(3000, "", "")
+	if err != nil {
+		t.Fatalf("getRecentLogs with 3000 items failed (likely payload limit): %v", err)
+	}
+	if len(logs) != 3000 {
+		t.Fatalf("expected 3000 logs, got %d", len(logs))
+	}
+}
+
