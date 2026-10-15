@@ -3,12 +3,15 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/brenoniehues/oh-my-logs/internal/config"
+	"github.com/brenoniehues/oh-my-logs/internal/parser"
 	"github.com/brenoniehues/oh-my-logs/internal/record"
+	"github.com/brenoniehues/oh-my-logs/internal/serial"
 )
 
 func TestMCPServer_HandshakeAndToolsList(t *testing.T) {
@@ -334,6 +337,87 @@ func TestMCPServer_WatchSession(t *testing.T) {
 
 	if !strings.Contains(watchText, "Watch session terminated early") || !strings.Contains(watchText, "BTN1") {
 		t.Errorf("expected watch_session to trigger early on BTN1, got: %s", watchText)
+	}
+}
+
+type mockSerialSource struct {
+	lines  chan string
+	errors chan error
+	stop   chan struct{}
+}
+
+func newMockSerialSource() *mockSerialSource {
+	return &mockSerialSource{
+		lines:  make(chan string, 10),
+		errors: make(chan error, 10),
+		stop:   make(chan struct{}),
+	}
+}
+
+func (m *mockSerialSource) Lines() <-chan string { return m.lines }
+func (m *mockSerialSource) Errors() <-chan error { return m.errors }
+func (m *mockSerialSource) Stop()                 { close(m.stop) }
+func (m *mockSerialSource) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func TestMCPSession_AutoReconnectOnDisconnect(t *testing.T) {
+	appCfg := &config.AppConfig{}
+	session := NewSession(appCfg, 100)
+
+	mockSrc := newMockSerialSource()
+	session.source = mockSrc
+	session.serialCfg = serial.Config{Port: "/dev/ttyTestPort", Baud: 115200}
+	session.running = true
+	session.stopChan = make(chan struct{})
+
+	go session.readLoop(mockSrc, parser.NewRawParser(), session.stopChan)
+
+	// Verify initial status is connected
+	status := session.GetStatus()
+	if !status.Connected {
+		t.Fatalf("expected session to be connected initially")
+	}
+
+	// Emit an error simulating hardware reset (e.g. device unplugged / bus reset)
+	mockSrc.errors <- fmt.Errorf("read: device not configured")
+
+	// Wait for session to transition to reconnecting
+	deadline := time.Now().Add(2 * time.Second)
+	transitioned := false
+	for time.Now().Before(deadline) {
+		st := session.GetStatus()
+		if !st.Connected && st.Reconnecting {
+			transitioned = true
+			if !strings.Contains(st.Detail, "device not configured") {
+				t.Errorf("expected detail to contain error, got: %s", st.Detail)
+			}
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if !transitioned {
+		t.Fatalf("session failed to transition to reconnecting state upon hardware error")
+	}
+
+	// Verify get_device_status reflects auto-reconnecting
+	handler := NewToolHandler(session, appCfg)
+	res := handler.handleGetDeviceStatus()
+	content := res.Content[0].Text
+	if !strings.Contains(content, "Auto-Reconnecting") {
+		t.Errorf("expected handleGetDeviceStatus to show Auto-Reconnecting, got: %s", content)
+	}
+
+	// Explicit Disconnect must cleanly terminate reconnect loop
+	if err := session.Disconnect(); err != nil {
+		t.Fatalf("Disconnect failed: %v", err)
+	}
+
+	finalStatus := session.GetStatus()
+	if finalStatus.Connected || finalStatus.Reconnecting {
+		t.Errorf("expected session to be fully disconnected, got connected=%v, reconnecting=%v",
+			finalStatus.Connected, finalStatus.Reconnecting)
 	}
 }
 

@@ -350,6 +350,17 @@ func (h *ToolHandler) handleGetDeviceStatus() CallToolResult {
 		sb.WriteString(fmt.Sprintf("Uptime: %.1fs\n", status.UptimeSec))
 		sb.WriteString(fmt.Sprintf("Buffer Records: %d / %d\n", status.BufferCount, status.BufferCap))
 		sb.WriteString(fmt.Sprintf("Total Lines Received: %d (%d bytes)\n", status.TotalLines, status.TotalBytes))
+	} else if status.Reconnecting {
+		sb.WriteString(fmt.Sprintf("Status: Auto-Reconnecting (waiting for %s)\n", status.Port))
+		if status.Detail != "" {
+			sb.WriteString(fmt.Sprintf("Detail: %s\n", status.Detail))
+		}
+		sb.WriteString(fmt.Sprintf("Profile: %s\n", status.Profile))
+		sb.WriteString(fmt.Sprintf("Buffer Records Preserved: %d / %d\n", status.BufferCount, status.BufferCap))
+		ports, _ := serial.ListPorts()
+		if len(ports) > 0 {
+			sb.WriteString(fmt.Sprintf("Currently Detected Ports: %s\n", strings.Join(ports, ", ")))
+		}
 	} else {
 		sb.WriteString("Status: Disconnected\n")
 		ports, _ := serial.ListPorts()
