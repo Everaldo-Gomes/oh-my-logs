@@ -1,7 +1,10 @@
 package mcp
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +34,9 @@ type Session struct {
 	stopChan chan struct{}
 	running  bool
 
+	reconnecting bool
+	connDetail   string
+
 	ipcClient *ipc.Client
 
 	connectedAt time.Time
@@ -53,12 +59,127 @@ func NewSession(appCfg *config.AppConfig, bufCap int) *Session {
 	sockAddr := ipc.SocketPath(configDir)
 	client := ipc.NewClient(sockAddr)
 
-	return &Session{
+	s := &Session{
 		appCfg:    appCfg,
 		buffer:    record.NewBuffer(bufCap),
 		parser:    parser.NewRawParser(),
 		ipcClient: client,
 	}
+
+	// If an active TUI session is running, hydrate the in-memory buffer
+	// with all pre-existing records so Gemini / MCP has immediate access to history!
+	if client.IsAvailable() {
+		s.SyncFromIPC()
+	} else if appCfg != nil && appCfg.LogsDir != "" {
+		s.SeedFromRecentDiskLog(2 * time.Hour)
+	}
+
+	return s
+}
+
+// SyncFromIPC synchronizes the local session state and in-memory buffer
+// with an active running TUI instance.
+func (s *Session) SyncFromIPC() {
+	if s.ipcClient == nil || !s.ipcClient.IsAvailable() {
+		return
+	}
+
+	// 1. Fetch remote status
+	stat, err := s.ipcClient.GetStatus()
+	if err == nil {
+		s.mu.Lock()
+		if prof, ok := stat["profile"].(string); ok && prof != "" {
+			s.profileName = prof
+		}
+		if p, ok := stat["port"].(string); ok && p != "" {
+			s.serialCfg.Port = p
+		}
+		if b, ok := stat["baud"].(float64); ok && b > 0 {
+			s.serialCfg.Baud = int(b)
+		}
+		s.mu.Unlock()
+	}
+
+	// 2. Fetch existing in-memory logs up to buffer capacity
+	bufCap := s.buffer.Cap()
+	if bufCap <= 0 {
+		bufCap = record.DefaultCapacity
+	}
+	logs, err := s.ipcClient.GetRecentLogs(bufCap, "", "")
+	if err == nil && len(logs) > 0 {
+		s.mu.Lock()
+		s.buffer.Clear()
+		for _, r := range logs {
+			s.buffer.Add(r)
+		}
+		s.lineCount = int64(len(logs))
+		s.mu.Unlock()
+	}
+}
+
+// SeedFromRecentDiskLog attempts to load records from the most recently modified log file
+// in the logs directory into the in-memory buffer.
+func (s *Session) SeedFromRecentDiskLog(maxAge time.Duration) (string, int) {
+	if s.appCfg == nil || s.appCfg.LogsDir == "" {
+		return "", 0
+	}
+
+	entries, err := os.ReadDir(s.appCfg.LogsDir)
+	if err != nil {
+		return "", 0
+	}
+
+	var newestPath string
+	var newestMod time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if maxAge > 0 && time.Since(info.ModTime()) > maxAge {
+			continue
+		}
+		if info.ModTime().After(newestMod) {
+			newestMod = info.ModTime()
+			newestPath = filepath.Join(s.appCfg.LogsDir, entry.Name())
+		}
+	}
+
+	if newestPath == "" {
+		return "", 0
+	}
+
+	f, err := os.Open(newestPath)
+	if err != nil {
+		return "", 0
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	count := 0
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		r := record.Record{
+			ID:        uint64(count + 1),
+			Raw:       line,
+			Timestamp: newestMod,
+		}
+		s.buffer.Add(r)
+		count++
+	}
+	s.lineCount = int64(count)
+	return newestPath, count
 }
 
 // IsIPCAvailable checks if an active TUI instance is servicing requests.
@@ -88,16 +209,18 @@ func (s *Session) IsConnected() bool {
 
 // Status returns current connection metadata and statistics.
 type DeviceStatus struct {
-	Connected   bool      `json:"connected"`
-	Port        string    `json:"port,omitempty"`
-	Baud        int       `json:"baud,omitempty"`
-	Profile     string    `json:"profile,omitempty"`
-	ConnectedAt time.Time `json:"connected_at,omitempty"`
-	UptimeSec   float64   `json:"uptime_sec,omitempty"`
-	BufferCount int       `json:"buffer_count"`
-	BufferCap   int       `json:"buffer_cap"`
-	TotalLines  int64     `json:"total_lines"`
-	TotalBytes  int64     `json:"total_bytes"`
+	Connected    bool      `json:"connected"`
+	Reconnecting bool      `json:"reconnecting,omitempty"`
+	Detail       string    `json:"detail,omitempty"`
+	Port         string    `json:"port,omitempty"`
+	Baud         int       `json:"baud,omitempty"`
+	Profile      string    `json:"profile,omitempty"`
+	ConnectedAt  time.Time `json:"connected_at,omitempty"`
+	UptimeSec    float64   `json:"uptime_sec,omitempty"`
+	BufferCount  int       `json:"buffer_count"`
+	BufferCap    int       `json:"buffer_cap"`
+	TotalLines   int64     `json:"total_lines"`
+	TotalBytes   int64     `json:"total_bytes"`
 }
 
 // GetStatus returns the current device status.
@@ -106,14 +229,16 @@ func (s *Session) GetStatus() DeviceStatus {
 	defer s.mu.RUnlock()
 
 	stat := DeviceStatus{
-		Connected:   s.running && s.source != nil,
-		Port:        s.serialCfg.Port,
-		Baud:        s.serialCfg.Baud,
-		Profile:     s.profileName,
-		BufferCount: s.buffer.Len(),
-		BufferCap:   s.buffer.Cap(),
-		TotalLines:  s.lineCount,
-		TotalBytes:  s.byteCount,
+		Connected:    s.running && s.source != nil,
+		Reconnecting: s.reconnecting,
+		Detail:       s.connDetail,
+		Port:         s.serialCfg.Port,
+		Baud:         s.serialCfg.Baud,
+		Profile:      s.profileName,
+		BufferCount:  s.buffer.Len(),
+		BufferCap:    s.buffer.Cap(),
+		TotalLines:   s.lineCount,
+		TotalBytes:   s.byteCount,
 	}
 
 	if stat.Connected && !s.connectedAt.IsZero() {
@@ -160,6 +285,8 @@ func (s *Session) Connect(port string, baud int, profileName string) error {
 	s.connectedAt = time.Now()
 	s.stopChan = make(chan struct{})
 	s.running = true
+	s.reconnecting = false
+	s.connDetail = ""
 
 	go s.readLoop(src, p, s.stopChan)
 
@@ -171,11 +298,13 @@ func (s *Session) Disconnect() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.running || s.source == nil {
+	if !s.running {
 		return fmt.Errorf("no serial device is currently connected")
 	}
 
 	s.stopSourceLocked()
+	s.reconnecting = false
+	s.connDetail = ""
 	return nil
 }
 
@@ -237,13 +366,20 @@ func (s *Session) resolveParserLocked(name string) (parser.Parser, *parser.Profi
 
 func (s *Session) readLoop(src serial.Source, p parser.Parser, stop <-chan struct{}) {
 	lines := src.Lines()
+	errs := src.Errors()
 
 	for {
 		select {
 		case <-stop:
 			return
+		case err, ok := <-errs:
+			if ok && err != nil {
+				s.handleDisconnect(src, err)
+				return
+			}
 		case line, ok := <-lines:
 			if !ok {
+				s.handleDisconnect(src, nil)
 				return
 			}
 			clean := serial.CleanTerminalLine(line)
@@ -269,6 +405,86 @@ func (s *Session) readLoop(src serial.Source, p parser.Parser, stop <-chan struc
 			s.lineCount++
 			s.byteCount += int64(len(clean))
 			s.mu.Unlock()
+		}
+	}
+}
+
+func (s *Session) handleDisconnect(faultySrc serial.Source, err error) {
+	s.mu.Lock()
+	if !s.running || s.source != faultySrc {
+		s.mu.Unlock()
+		return
+	}
+
+	// Close the faulted source
+	if s.source != nil {
+		s.source.Stop()
+		s.source = nil
+	}
+
+	detail := "device reset or disconnected"
+	if err != nil {
+		detail = err.Error()
+	}
+	s.connDetail = detail
+	s.reconnecting = true
+
+	cfg := s.serialCfg
+	stop := s.stopChan
+	p := s.parser
+	s.mu.Unlock()
+
+	go s.reconnectLoop(cfg, p, stop)
+}
+
+func (s *Session) reconnectLoop(cfg serial.Config, p parser.Parser, stop <-chan struct{}) {
+	ticker := time.NewTicker(750 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.mu.RLock()
+			if !s.running {
+				s.mu.RUnlock()
+				return
+			}
+			s.mu.RUnlock()
+
+			ports, err := serial.ListPorts()
+			if err != nil || len(ports) == 0 {
+				continue
+			}
+
+			candidate := serial.MatchCandidatePort(cfg.Port, ports)
+			if candidate == "" {
+				continue
+			}
+
+			candidateCfg := cfg
+			candidateCfg.Port = candidate
+			newSrc, err := serial.NewSerialSource(candidateCfg)
+			if err != nil {
+				continue
+			}
+
+			s.mu.Lock()
+			if !s.running {
+				newSrc.Stop()
+				s.mu.Unlock()
+				return
+			}
+			s.source = newSrc
+			s.serialCfg.Port = candidate
+			s.connectedAt = time.Now()
+			s.reconnecting = false
+			s.connDetail = ""
+			s.mu.Unlock()
+
+			go s.readLoop(newSrc, p, stop)
+			return
 		}
 	}
 }

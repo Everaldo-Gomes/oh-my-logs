@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/brenoniehues/oh-my-logs/internal/filter"
+	"github.com/brenoniehues/oh-my-logs/internal/parser"
 	"github.com/brenoniehues/oh-my-logs/internal/record"
 	"github.com/brenoniehues/oh-my-logs/internal/serial"
 	tea "github.com/charmbracelet/bubbletea"
@@ -384,3 +385,335 @@ func TestTXEchoProfileTransformAndFilter(t *testing.T) {
 		t.Errorf("expected Raw preserved after transform, got %q", recAfter.Raw)
 	}
 }
+
+func TestShellInteractiveMode_ActivationAndExit(t *testing.T) {
+	m := newTestModel()
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+
+	// 1. Press 'I' to enter shell passthrough mode
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'I'}})
+	m = updated.(Model)
+	if m.mode != modeShellInteractive {
+		t.Fatalf("expected modeShellInteractive after pressing 'I', got %v", m.mode)
+	}
+
+	// 2. Key bar should render shell indicator
+	keyBar := m.viewKeyBar()
+	if !strings.Contains(keyBar, "SHELL") || !strings.Contains(keyBar, "MCU completion") {
+		t.Errorf("expected key bar to display shell passthrough hints, got:\n%s", keyBar)
+	}
+
+	// 3. Status bar should render SHELL ACTIVE badge
+	statusBar := m.viewStatusBar()
+	if !strings.Contains(statusBar, "SHELL ACTIVE") {
+		t.Errorf("expected status bar to display 'SHELL ACTIVE', got:\n%s", statusBar)
+	}
+
+	// 4. Press Esc to exit back to log view
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.mode != modeNormal {
+		t.Fatalf("expected modeNormal after Esc, got %v", m.mode)
+	}
+}
+
+func TestShellInteractiveMode_TabForwardingAndCharacterStreaming(t *testing.T) {
+	m := newTestModel()
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+	m.mode = modeShellInteractive
+
+	// 1. Type characters 'h', 'e', 'l', 'p'
+	for _, r := range []rune{'h', 'e', 'l', 'p'} {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+
+	if len(mock.written) != 4 {
+		t.Fatalf("expected 4 character writes to serial, got %d", len(mock.written))
+	}
+	if string(mock.written[0]) != "h" || string(mock.written[3]) != "p" {
+		t.Errorf("unexpected written characters: %v", mock.written)
+	}
+	if m.shellInput.Value != "help" {
+		t.Errorf("expected shellInput value 'help', got %q", m.shellInput.Value)
+	}
+
+	// 2. Press Tab: should forward ASCII 0x09 directly to device!
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+
+	lastWritten := mock.written[len(mock.written)-1]
+	if !bytes.Equal(lastWritten, []byte{'\t'}) {
+		t.Errorf("expected Tab (0x09) sent to serial, got %v", lastWritten)
+	}
+
+	// 3. Press Ctrl+C: should forward ASCII 0x03 interrupt signal!
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+
+	lastWritten = mock.written[len(mock.written)-1]
+	if !bytes.Equal(lastWritten, []byte{0x03}) {
+		t.Errorf("expected Ctrl+C (0x03) sent to serial, got %v", lastWritten)
+	}
+	if m.shellInput.Value != "" {
+		t.Errorf("expected shellInput to reset on Ctrl+C, got %q", m.shellInput.Value)
+	}
+
+	// 4. Arrow keys: Up should send ANSI \x1b[A
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(Model)
+	lastWritten = mock.written[len(mock.written)-1]
+	if string(lastWritten) != "\x1b[A" {
+		t.Errorf("expected up arrow ANSI sequence, got %q", string(lastWritten))
+	}
+
+	// 5. Enter should send configured line ending only (preventing command duplication) and record TX badge
+	m.shellInput.SetText("version")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	lastWritten = mock.written[len(mock.written)-1]
+	if string(lastWritten) != "\r\n" {
+		t.Errorf("expected only newline ending '\\r\\n' sent on Enter in interactive mode, got %q", string(lastWritten))
+	}
+
+	if m.buffer.Len() != 1 {
+		t.Fatalf("expected 1 record in buffer for TX badge, got %d", m.buffer.Len())
+	}
+	if !strings.Contains(m.buffer.All()[0].Raw, "version") {
+		t.Errorf("expected TX badge record with 'version', got %q", m.buffer.All()[0].Raw)
+	}
+}
+
+func TestShellInteractiveMode_PromptCompletionSync(t *testing.T) {
+	m := newTestModel()
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+	m.mode = modeShellInteractive
+
+	// Engineer typed 'os' and pressed Tab to request autocompletion
+	m.shellInput.SetText("os")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+
+	if !m.shellAwaitingTab {
+		t.Errorf("expected shellAwaitingTab to be true after pressing Tab")
+	}
+
+	// Device responds with prompt and completed token 'os_'
+	updated, _ = m.Update(lineMsg("uart:~$ os_"))
+	m = updated.(Model)
+
+	if m.shellAwaitingTab {
+		t.Errorf("expected shellAwaitingTab to be reset to false after completion sync")
+	}
+	if m.shellPrompt != "uart:~$ " {
+		t.Errorf("expected shellPrompt 'uart:~$ ', got %q", m.shellPrompt)
+	}
+	if m.shellInput.Value != "os_" {
+		t.Errorf("expected shellInput to be updated to 'os_', got %q", m.shellInput.Value)
+	}
+	// Verify prompt wasn't dumped into the log buffer as a fake record
+	if m.buffer.Len() != 0 {
+		t.Errorf("expected buffer to remain empty of prompt artifacts, got %d records", m.buffer.Len())
+	}
+}
+
+func TestShellInteractiveMode_DuplicateEchoSuppression(t *testing.T) {
+	m := newTestModel()
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+	m.mode = modeShellInteractive
+
+	// Send command
+	m.shellInput.SetText("hi")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Buffer has TX record
+	if m.buffer.Len() != 1 {
+		t.Fatalf("expected 1 record (TX message), got %d", m.buffer.Len())
+	}
+
+	// Device echoes 'hi'
+	updated, _ = m.Update(lineMsg("hi"))
+	m = updated.(Model)
+
+	// Duplicate echo must be suppressed, buffer still at 1
+	if m.buffer.Len() != 1 {
+		t.Errorf("expected duplicate echo 'hi' to be suppressed, buffer len = %d", m.buffer.Len())
+	}
+
+	// Device sends command output
+	updated, _ = m.Update(lineMsg("hi: command not found"))
+	m = updated.(Model)
+
+	// Output is recorded!
+	if m.buffer.Len() != 2 {
+		t.Fatalf("expected 2 records, got %d", m.buffer.Len())
+	}
+	if !strings.Contains(m.buffer.All()[1].Raw, "command not found") {
+		t.Errorf("expected command not found output, got %q", m.buffer.All()[1].Raw)
+	}
+}
+
+func TestUnparsedRow_FullWidthSpanningAndGutter(t *testing.T) {
+	m := newTestModel()
+	cols := []record.Column{
+		{Field: "uptime", Title: "Uptime", Width: 10, Style: "uptime"},
+		{Field: "level", Title: "Level", Width: 6, Style: "level"},
+		{Field: "module", Title: "Module", Width: 12, Style: "identifier"},
+		{Field: "message", Title: "Message", Width: 0, Style: "primary"},
+	}
+	m.columns = cols
+	m.width = 100
+	m.height = 20
+	m.recalcLayout()
+
+	// Ingest a standard log record (parsed with uptime, level, module)
+	m.ingestRecord(record.Record{
+		Raw: "[   10.839] <inf> os_msg: test log",
+		Fields: map[string]string{
+			"uptime":  "10.839",
+			"level":   "inf",
+			"module":  "os_msg",
+			"message": "test log",
+		},
+	})
+
+	// Ingest an unparsed non-log subcommand help record
+	unparsedHelp := "  set_conv_group                : Set Conversation Group ID"
+	m.ingestRecord(record.Record{
+		Raw: unparsedHelp,
+		Fields: map[string]string{
+			"_raw":    unparsedHelp,
+			"message": unparsedHelp,
+		},
+	})
+
+	view := m.viewTable()
+
+	// Verify the unparsed row renders with gutter separator '│'
+	if !strings.Contains(view, "│") {
+		t.Errorf("expected viewTable to render unparsed row gutter indicator '│', got:\n%s", view)
+	}
+
+	// Verify the unparsed subcommand text appears in view
+	if !strings.Contains(view, "set_conv_group") {
+		t.Errorf("expected viewTable to contain unparsed help text 'set_conv_group', got:\n%s", view)
+	}
+}
+
+func TestShellInteractiveMode_KeystrokeEchoFiltered(t *testing.T) {
+	m := newTestModel()
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+	m.mode = modeShellInteractive
+
+	// Keystrokes echoed by MCU shell while typing
+	for _, ch := range []string{"o", "s", "_", "m", "s", "g"} {
+		updated, _ := m.Update(lineMsg(ch))
+		m = updated.(Model)
+	}
+
+	// None of the single-character keystroke echoes should have been added to the buffer
+	if m.buffer.Len() != 0 {
+		t.Errorf("expected keystroke echoes to be filtered out, got %d records in buffer", m.buffer.Len())
+	}
+
+	// Real multiline output from MCU should still be ingested normally
+	updated, _ := m.Update(lineMsg("os_msg: command not found"))
+	m = updated.(Model)
+	if m.buffer.Len() != 1 {
+		t.Errorf("expected real command output to be ingested, got %d records", m.buffer.Len())
+	}
+}
+
+func TestShellInteractiveMode_NoTabCompletionWithoutTabPress(t *testing.T) {
+	m := newTestModel()
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+	m.mode = modeShellInteractive
+
+	// User types a command but DOES NOT press Tab
+	m.shellInput.SetText("os_msg")
+
+	// Device prints multiline subcommand help text where some lines might match prompt-like tokens
+	helpLines := []string{
+		"os_msg - OS Message module APIs test commands",
+		"Subcommands:",
+		"  publish                       : Publish a message",
+		"  )<key0>=<value0>,<key1>=<value1>,....",
+		"  uart:~$ help",
+	}
+
+	for _, l := range helpLines {
+		updated, _ := m.Update(lineMsg(l))
+		m = updated.(Model)
+	}
+
+	// shellInput must REMAIN strictly "os_msg" and NOT be polluted or overwritten by incoming text
+	if m.shellInput.Value != "os_msg" {
+		t.Errorf("expected shellInput to remain %q, but got corrupted value: %q", "os_msg", m.shellInput.Value)
+	}
+}
+
+func TestShellInteractiveMode_AsyncLogsWithActiveInputNotPrefixed(t *testing.T) {
+	m := newTestModel()
+	zephyrParser, err := parser.NewRegexParser(`^\[\s*(?P<uptime>[^\]]+?)\s*\]\s+<(?P<level>[a-zA-Z]+)>\s+(?:(?P<module>[a-zA-Z0-9_.-]+):\s+)?(?P<message>.*)$`)
+	if err != nil {
+		t.Fatalf("failed to create regex parser: %v", err)
+	}
+	m.parser = zephyrParser
+	mock := newTXMockSource()
+	m.source = mock
+	m.connState = ConnConnected
+	m.mode = modeShellInteractive
+
+	// User types "os_msg enable_logging" into interactive shell input
+	m.shellInput.SetText("os_msg enable_logging")
+
+	// Embedded shell receives async logs while prompt is active, erasing line with \r\x1b[K
+	incoming := []string{
+		"os_msg enable_logging\r\x1b[K[    368.331] <wrn> nxp_wifi: WLAN: Unknown Event: 5",
+		"os_msg enable_logging\r\x1b[K[    368.331] <inf> wpa_supp: wifi_nxp: BG scan stopped",
+	}
+
+	for _, raw := range incoming {
+		updated, _ := m.Update(lineMsg(raw))
+		m = updated.(Model)
+	}
+
+	if m.buffer.Len() != 2 {
+		t.Fatalf("expected 2 records in buffer, got %d", m.buffer.Len())
+	}
+
+	all := m.buffer.All()
+	rec0 := all[0]
+	if strings.Contains(rec0.Raw, "os_msg enable_logging") {
+		t.Errorf("expected rec0 to not contain active input prefix, got: %q", rec0.Raw)
+	}
+	if rec0.Fields["module"] != "nxp_wifi" {
+		t.Errorf("expected rec0 module to be nxp_wifi, got: %q", rec0.Fields["module"])
+	}
+
+	rec1 := all[1]
+	if strings.Contains(rec1.Raw, "os_msg enable_logging") {
+		t.Errorf("expected rec1 to not contain active input prefix, got: %q", rec1.Raw)
+	}
+	if rec1.Fields["module"] != "wpa_supp" {
+		t.Errorf("expected rec1 module to be wpa_supp, got: %q", rec1.Fields["module"])
+	}
+}
+
+
+
+

@@ -65,14 +65,19 @@ func getAvailableTools() []Tool {
 		},
 		{
 			Name:        "get_recent_logs",
-			Description: "Retrieve recent log records from the in-memory ring buffer, optionally filtered by minimum log level or module.",
+			Description: "Retrieve recent log records from the in-memory ring buffer (including pre-existing logs from active oml TUI session), optionally filtered by minimum log level or module.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]PropertyDef{
 					"count": {
 						Type:        "integer",
-						Description: "Number of most recent log lines to retrieve (default: 50, max: 1000).",
+						Description: "Number of most recent log lines to retrieve (default: 50, max: 10000).",
 						Default:     50,
+					},
+					"all": {
+						Type:        "boolean",
+						Description: "Retrieve all available logs from memory history regardless of count limit (default: false).",
+						Default:     false,
 					},
 					"min_level": {
 						Type:        "string",
@@ -350,6 +355,17 @@ func (h *ToolHandler) handleGetDeviceStatus() CallToolResult {
 		sb.WriteString(fmt.Sprintf("Uptime: %.1fs\n", status.UptimeSec))
 		sb.WriteString(fmt.Sprintf("Buffer Records: %d / %d\n", status.BufferCount, status.BufferCap))
 		sb.WriteString(fmt.Sprintf("Total Lines Received: %d (%d bytes)\n", status.TotalLines, status.TotalBytes))
+	} else if status.Reconnecting {
+		sb.WriteString(fmt.Sprintf("Status: Auto-Reconnecting (waiting for %s)\n", status.Port))
+		if status.Detail != "" {
+			sb.WriteString(fmt.Sprintf("Detail: %s\n", status.Detail))
+		}
+		sb.WriteString(fmt.Sprintf("Profile: %s\n", status.Profile))
+		sb.WriteString(fmt.Sprintf("Buffer Records Preserved: %d / %d\n", status.BufferCount, status.BufferCap))
+		ports, _ := serial.ListPorts()
+		if len(ports) > 0 {
+			sb.WriteString(fmt.Sprintf("Currently Detected Ports: %s\n", strings.Join(ports, ", ")))
+		}
 	} else {
 		sb.WriteString("Status: Disconnected\n")
 		ports, _ := serial.ListPorts()
@@ -366,6 +382,7 @@ func (h *ToolHandler) handleGetDeviceStatus() CallToolResult {
 
 type getLogsParams struct {
 	Count    int    `json:"count"`
+	All      bool   `json:"all"`
 	MinLevel string `json:"min_level"`
 	Module   string `json:"module"`
 	SinceID  uint64 `json:"since_id"`
@@ -377,14 +394,19 @@ func (h *ToolHandler) handleGetRecentLogs(rawArgs json.RawMessage) CallToolResul
 		_ = json.Unmarshal(rawArgs, &params)
 	}
 
-	if params.Count <= 0 {
-		params.Count = 50
-	} else if params.Count > 1000 {
-		params.Count = 1000
+	fetchCount := params.Count
+	if params.All {
+		fetchCount = 0 // 0 indicates retrieve full buffer
+	} else {
+		if fetchCount <= 0 {
+			fetchCount = 50
+		} else if fetchCount > 10000 {
+			fetchCount = 10000
+		}
 	}
 
 	if h.session.IsIPCAvailable() {
-		logs, err := h.session.IPCClient().GetRecentLogs(params.Count, params.MinLevel, params.Module)
+		logs, err := h.session.IPCClient().GetRecentLogs(fetchCount, params.MinLevel, params.Module)
 		if err == nil {
 			if params.SinceID > 0 {
 				var filteredSince []record.Record
@@ -399,6 +421,13 @@ func (h *ToolHandler) handleGetRecentLogs(rawArgs json.RawMessage) CallToolResul
 				return textSuccess("No new logs available matching filter in active TUI session.")
 			}
 			var sb strings.Builder
+			totalInMem := len(logs)
+			if stat, err := h.session.IPCClient().GetStatus(); err == nil {
+				if cnt, ok := stat["buffer_count"].(float64); ok && int(cnt) > 0 {
+					totalInMem = int(cnt)
+				}
+			}
+			sb.WriteString(fmt.Sprintf("--- Showing %d log record(s) (total in memory: %d) ---\n", len(logs), totalInMem))
 			for _, r := range logs {
 				sb.WriteString(formatRecord(r))
 				sb.WriteString("\n")
@@ -411,7 +440,7 @@ func (h *ToolHandler) handleGetRecentLogs(rawArgs json.RawMessage) CallToolResul
 	if len(all) == 0 {
 		status := h.session.GetStatus()
 		if !status.Connected {
-			return textSuccess("No logs available (device is currently disconnected).")
+			return textSuccess("No logs available (device is currently disconnected and buffer is empty).")
 		}
 		return textSuccess("No logs recorded yet.")
 	}
@@ -427,8 +456,8 @@ func (h *ToolHandler) handleGetRecentLogs(rawArgs json.RawMessage) CallToolResul
 	}
 
 	filtered := filterRecords(all, params.MinLevel, params.Module)
-	if len(filtered) > params.Count {
-		filtered = filtered[len(filtered)-params.Count:]
+	if fetchCount > 0 && len(filtered) > fetchCount {
+		filtered = filtered[len(filtered)-fetchCount:]
 	}
 
 	if len(filtered) == 0 {
@@ -436,6 +465,7 @@ func (h *ToolHandler) handleGetRecentLogs(rawArgs json.RawMessage) CallToolResul
 	}
 
 	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("--- Showing %d log record(s) (total in memory: %d) ---\n", len(filtered), h.session.Buffer().Len()))
 	for _, r := range filtered {
 		sb.WriteString(formatRecord(r))
 		sb.WriteString("\n")
@@ -679,15 +709,18 @@ func (h *ToolHandler) handleWaitForLog(rawArgs json.RawMessage) CallToolResult {
 	startTime := time.Now()
 	timeout := time.Duration(params.TimeoutSec) * time.Second
 
-	// Record buffer index before polling
-	startCount := 0
+	// Baseline checkpoint ID: only inspect records arriving after wait_for_log starts
+	var lastID uint64 = 0
 	if h.session.IsIPCAvailable() {
-		status, _ := h.session.IPCClient().GetStatus()
-		if cnt, ok := status["buffer_count"].(float64); ok {
-			startCount = int(cnt)
+		recent, _ := h.session.IPCClient().GetRecentLogs(1, "", "")
+		if len(recent) > 0 {
+			lastID = recent[len(recent)-1].ID
 		}
 	} else {
-		startCount = h.session.Buffer().Len()
+		all := h.session.Buffer().All()
+		if len(all) > 0 {
+			lastID = all[len(all)-1].ID
+		}
 	}
 
 	// Poll loop
@@ -695,26 +728,32 @@ func (h *ToolHandler) handleWaitForLog(rawArgs json.RawMessage) CallToolResult {
 		var candidateLogs []record.Record
 
 		if h.session.IsIPCAvailable() {
-			logs, _ := h.session.IPCClient().GetRecentLogs(100, "", "")
-			candidateLogs = logs
+			candidateLogs, _ = h.session.IPCClient().GetRecentLogs(100, "", "")
 		} else {
 			candidateLogs = h.session.Buffer().All()
 		}
 
-		// Check new lines since startCount
-		if len(candidateLogs) > startCount {
-			for _, r := range candidateLogs[startCount:] {
-				matched := false
-				if reg != nil {
-					matched = reg.MatchString(r.Raw)
-				} else {
-					matched = strings.Contains(strings.ToLower(r.Raw), patternLower)
-				}
+		for _, r := range candidateLogs {
+			if r.ID <= lastID {
+				continue
+			}
+			matched := false
+			if reg != nil {
+				matched = reg.MatchString(r.Raw)
+			} else {
+				matched = strings.Contains(strings.ToLower(r.Raw), patternLower)
+			}
 
-				if matched {
-					elapsed := time.Since(startTime).Seconds()
-					return textSuccess(fmt.Sprintf("✓ Pattern matched in %.2fs: %s", elapsed, formatRecord(r)))
-				}
+			if matched {
+				elapsed := time.Since(startTime).Seconds()
+				return textSuccess(fmt.Sprintf("✓ Pattern matched in %.2fs: %s", elapsed, formatRecord(r)))
+			}
+		}
+
+		if len(candidateLogs) > 0 {
+			newestID := candidateLogs[len(candidateLogs)-1].ID
+			if newestID > lastID {
+				lastID = newestID
 			}
 		}
 

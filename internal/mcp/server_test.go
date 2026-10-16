@@ -3,12 +3,18 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/brenoniehues/oh-my-logs/internal/config"
+	"github.com/brenoniehues/oh-my-logs/internal/ipc"
+	"github.com/brenoniehues/oh-my-logs/internal/parser"
 	"github.com/brenoniehues/oh-my-logs/internal/record"
+	"github.com/brenoniehues/oh-my-logs/internal/serial"
 )
 
 func TestMCPServer_HandshakeAndToolsList(t *testing.T) {
@@ -336,4 +342,251 @@ func TestMCPServer_WatchSession(t *testing.T) {
 		t.Errorf("expected watch_session to trigger early on BTN1, got: %s", watchText)
 	}
 }
+
+type mockSerialSource struct {
+	lines  chan string
+	errors chan error
+	stop   chan struct{}
+}
+
+func newMockSerialSource() *mockSerialSource {
+	return &mockSerialSource{
+		lines:  make(chan string, 10),
+		errors: make(chan error, 10),
+		stop:   make(chan struct{}),
+	}
+}
+
+func (m *mockSerialSource) Lines() <-chan string { return m.lines }
+func (m *mockSerialSource) Errors() <-chan error { return m.errors }
+func (m *mockSerialSource) Stop()                 { close(m.stop) }
+func (m *mockSerialSource) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func TestMCPSession_AutoReconnectOnDisconnect(t *testing.T) {
+	appCfg := &config.AppConfig{}
+	session := NewSession(appCfg, 100)
+
+	mockSrc := newMockSerialSource()
+	session.source = mockSrc
+	session.serialCfg = serial.Config{Port: "/dev/ttyTestPort", Baud: 115200}
+	session.running = true
+	session.stopChan = make(chan struct{})
+
+	go session.readLoop(mockSrc, parser.NewRawParser(), session.stopChan)
+
+	// Verify initial status is connected
+	status := session.GetStatus()
+	if !status.Connected {
+		t.Fatalf("expected session to be connected initially")
+	}
+
+	// Emit an error simulating hardware reset (e.g. device unplugged / bus reset)
+	mockSrc.errors <- fmt.Errorf("read: device not configured")
+
+	// Wait for session to transition to reconnecting
+	deadline := time.Now().Add(2 * time.Second)
+	transitioned := false
+	for time.Now().Before(deadline) {
+		st := session.GetStatus()
+		if !st.Connected && st.Reconnecting {
+			transitioned = true
+			if !strings.Contains(st.Detail, "device not configured") {
+				t.Errorf("expected detail to contain error, got: %s", st.Detail)
+			}
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if !transitioned {
+		t.Fatalf("session failed to transition to reconnecting state upon hardware error")
+	}
+
+	// Verify get_device_status reflects auto-reconnecting
+	handler := NewToolHandler(session, appCfg)
+	res := handler.handleGetDeviceStatus()
+	content := res.Content[0].Text
+	if !strings.Contains(content, "Auto-Reconnecting") {
+		t.Errorf("expected handleGetDeviceStatus to show Auto-Reconnecting, got: %s", content)
+	}
+
+	// Explicit Disconnect must cleanly terminate reconnect loop
+	if err := session.Disconnect(); err != nil {
+		t.Fatalf("Disconnect failed: %v", err)
+	}
+
+	finalStatus := session.GetStatus()
+	if finalStatus.Connected || finalStatus.Reconnecting {
+		t.Errorf("expected session to be fully disconnected, got connected=%v, reconnecting=%v",
+			finalStatus.Connected, finalStatus.Reconnecting)
+	}
+}
+
+type mockTUIIPCHandler struct {
+	records []record.Record
+}
+
+func (m *mockTUIIPCHandler) GetStatus() map[string]interface{} {
+	return map[string]interface{}{
+		"connected":    true,
+		"port":         "/dev/ttyACM0",
+		"baud":         115200,
+		"profile":      "Zephyr",
+		"buffer_count": len(m.records),
+		"buffer_cap":   100000,
+		"source_type":  "tui",
+	}
+}
+
+func (m *mockTUIIPCHandler) GetRecentLogs(count int, minLevel, module string) []record.Record {
+	if count <= 0 || count >= len(m.records) {
+		return m.records
+	}
+	return m.records[len(m.records)-count:]
+}
+
+func (m *mockTUIIPCHandler) SearchLogs(query string, isRegex bool, maxResults int) []record.Record {
+	var matches []record.Record
+	for _, r := range m.records {
+		if strings.Contains(r.Raw, query) {
+			matches = append(matches, r)
+		}
+	}
+	if maxResults > 0 && len(matches) > maxResults {
+		return matches[len(matches)-maxResults:]
+	}
+	return matches
+}
+
+func (m *mockTUIIPCHandler) SendSerialCommand(command string, waitMS int, ending string) (int, []record.Record, error) {
+	return len(command), []record.Record{{Raw: "ok: " + command}}, nil
+}
+
+func (m *mockTUIIPCHandler) HandoverPort() error {
+	return nil
+}
+
+func TestMCPSession_SyncPreExistingLogsFromActiveTUI(t *testing.T) {
+	tmpConfigDir := filepath.Join(os.TempDir(), fmt.Sprintf("oml_cfg_%d", time.Now().UnixNano()))
+	_ = os.MkdirAll(tmpConfigDir, 0o755)
+	defer os.RemoveAll(tmpConfigDir)
+
+	sockAddr := ipc.SocketPath(tmpConfigDir)
+	defer os.Remove(sockAddr)
+
+	// Simulate 1,500 logs existent in memory from 15 minutes of prior usage
+	totalRecords := 1500
+	records := make([]record.Record, totalRecords)
+	for i := 0; i < totalRecords; i++ {
+		records[i] = record.Record{
+			ID:        uint64(i + 1),
+			Raw:       fmt.Sprintf("[12:00:%02d.%03d] <inf> sys: sensor_%d packet=%d status=OK", i/60, i%1000, i%8, i),
+			Timestamp: time.Now(),
+			Fields: map[string]string{
+				"level":   "INFO",
+				"module":  "sys",
+				"message": fmt.Sprintf("sensor_%d packet=%d status=OK", i%8, i),
+			},
+		}
+	}
+
+	mockTUI := &mockTUIIPCHandler{records: records}
+	srv, err := ipc.NewServer(sockAddr, mockTUI)
+	if err != nil {
+		t.Fatalf("failed starting mock TUI IPC server: %v", err)
+	}
+	defer srv.Close()
+
+	appCfg := &config.AppConfig{ConfigDir: tmpConfigDir}
+
+	// Start MCP session (as Gemini would when opening 15 minutes later)
+	session := NewSession(appCfg, 50_000)
+
+	// 1. Verify session immediately hydrated its in-memory buffer with all 1,500 pre-existing logs
+	if session.Buffer().Len() != totalRecords {
+		t.Fatalf("expected session buffer to have %d pre-existing records, got %d", totalRecords, session.Buffer().Len())
+	}
+
+	handler := NewToolHandler(session, appCfg)
+
+	// 2. Default get_recent_logs returns recent batch with total memory metadata
+	resDefault := handler.handleGetRecentLogs(nil)
+	if resDefault.IsError {
+		t.Fatalf("handleGetRecentLogs failed: %s", resDefault.Content[0].Text)
+	}
+	textDefault := resDefault.Content[0].Text
+	if !strings.Contains(textDefault, "total in memory: 1500") {
+		t.Errorf("expected memory metadata header in logs output, got: %s", textDefault)
+	}
+	if !strings.Contains(textDefault, "Showing 50 log record(s)") {
+		t.Errorf("expected default 50 records, got: %s", textDefault)
+	}
+
+	// 3. get_recent_logs with all: true retrieves all 1,500 logs from memory history
+	resAll := handler.handleGetRecentLogs([]byte(`{"all": true}`))
+	if resAll.IsError {
+		t.Fatalf("handleGetRecentLogs with all:true failed: %s", resAll.Content[0].Text)
+	}
+	textAll := resAll.Content[0].Text
+	if !strings.Contains(textAll, "Showing 1500 log record(s)") {
+		t.Errorf("expected all 1500 records, got: %s", textAll)
+	}
+
+	// 4. get_recent_logs with count: 500 retrieves 500 logs
+	res500 := handler.handleGetRecentLogs([]byte(`{"count": 500}`))
+	if res500.IsError {
+		t.Fatalf("handleGetRecentLogs with count:500 failed: %s", res500.Content[0].Text)
+	}
+	text500 := res500.Content[0].Text
+	if !strings.Contains(text500, "Showing 500 log record(s)") {
+		t.Errorf("expected 500 records, got: %s", text500)
+	}
+
+	// 5. search_logs searches across the entire history
+	resSearch := handler.handleSearchLogs([]byte(`{"query": "sensor_3", "max_results": 10}`))
+	if resSearch.IsError {
+		t.Fatalf("handleSearchLogs failed: %s", resSearch.Content[0].Text)
+	}
+	if !strings.Contains(resSearch.Content[0].Text, "sensor_3") {
+		t.Errorf("expected search to find sensor_3 in historical memory, got: %s", resSearch.Content[0].Text)
+	}
+}
+
+func TestMCPSession_SeedFromRecentDiskLog(t *testing.T) {
+	tmpLogsDir := t.TempDir()
+	logFile := filepath.Join(tmpLogsDir, "oml-2026-10-15T12-00-00.log")
+
+	var sb strings.Builder
+	for i := 0; i < 40; i++ {
+		sb.WriteString(fmt.Sprintf("[12:00:%02d] <inf> boot: subsystem %d initialized\n", i, i))
+	}
+	if err := os.WriteFile(logFile, []byte(sb.String()), 0o644); err != nil {
+		t.Fatalf("failed writing test log: %v", err)
+	}
+
+	appCfg := &config.AppConfig{
+		ConfigDir: t.TempDir(),
+		LogsDir:   tmpLogsDir,
+	}
+
+	// Create MCP session with no IPC server running
+	session := NewSession(appCfg, 100)
+
+	// Verify buffer was seeded from the recent disk log
+	if session.Buffer().Len() != 40 {
+		t.Fatalf("expected buffer to have 40 seeded records, got %d", session.Buffer().Len())
+	}
+
+	handler := NewToolHandler(session, appCfg)
+	res := handler.handleGetRecentLogs(nil)
+	if res.IsError {
+		t.Fatalf("handleGetRecentLogs failed: %s", res.Content[0].Text)
+	}
+	if !strings.Contains(res.Content[0].Text, "Showing 40 log record(s)") {
+		t.Errorf("expected 40 records in output, got: %s", res.Content[0].Text)
+	}
+}
+
 
