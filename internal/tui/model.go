@@ -260,6 +260,9 @@ type Model struct {
 	selectionEnd   int // multi-row drag end (-1 if none)
 	lastClickTime  time.Time
 	lastClickRow   int
+	lastClickCol   int
+	mousePressRow  int
+	mousePressCol  int
 
 	// Scrollbar mouse drag state
 	isDraggingVScroll bool // true while left mouse button is dragging vertical scrollbar
@@ -542,6 +545,9 @@ func New(
 	m.selectionStart = -1
 	m.selectionEnd = -1
 	m.lastClickRow = -1
+	m.lastClickCol = -1
+	m.mousePressRow = -1
+	m.mousePressCol = -1
 	m.cursorCol = -1
 	m.charSelStart = -1
 	m.charSelEnd = -1

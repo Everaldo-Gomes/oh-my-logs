@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/brenoniehues/oh-my-logs/internal/timing"
@@ -88,4 +89,95 @@ func (m Model) selectionMessage(count int, baseMsg string) string {
 		return fmt.Sprintf("%d rows selected · Δt: %s%s", count, timing.FormatDelta(d), suffix)
 	}
 	return fmt.Sprintf("%d rows selected%s", count, suffix)
+}
+
+// selectedText extracts the plain text content corresponding to the current selection.
+// If character-level mouse drag bounds are present, it slices the start and end lines
+// at the exact selected character columns.
+func (m Model) selectedText() string {
+	if len(m.visible) == 0 {
+		return ""
+	}
+
+	// Case 1: Single-row character selection
+	if (m.selectionStart < 0 || m.selectionEnd < 0 || m.selectionStart == m.selectionEnd) &&
+		m.charSelStart >= 0 && m.charSelEnd >= 0 && m.charSelStart != m.charSelEnd {
+		targetIdx := m.selectedRow
+		if targetIdx < 0 || targetIdx >= len(m.visible) {
+			targetIdx = m.selectionStart
+		}
+		if targetIdx < 0 || targetIdx >= len(m.visible) {
+			targetIdx = m.scrollOffset
+		}
+		if targetIdx >= 0 && targetIdx < len(m.visible) {
+			plainText := strings.TrimRight(m.selectedRowPlainText(targetIdx), " ")
+			runes := []rune(plainText)
+			minSel, maxSel := m.charSelStart, m.charSelEnd
+			if minSel > maxSel {
+				minSel, maxSel = maxSel, minSel
+			}
+			if minSel < 0 {
+				minSel = 0
+			}
+			if minSel < len(runes) {
+				if maxSel > len(runes) {
+					maxSel = len(runes)
+				}
+				return string(runes[minSel:maxSel])
+			}
+		}
+		return ""
+	}
+
+	// Case 2: Multi-row selection
+	if m.selectionStart >= 0 && m.selectionEnd >= 0 && m.selectionStart != m.selectionEnd {
+		topRow := m.selectionStart
+		bottomRow := m.selectionEnd
+		if topRow > bottomRow {
+			topRow, bottomRow = bottomRow, topRow
+		}
+		if topRow < 0 {
+			topRow = 0
+		}
+		if bottomRow >= len(m.visible) {
+			bottomRow = len(m.visible) - 1
+		}
+
+		// Whole-row selection (Shift+Arrows or Ctrl+A) where columns are not tracked
+		if m.charSelStart < 0 || m.charSelEnd < 0 || m.charSelStart == m.charSelEnd {
+			var b strings.Builder
+			for i := topRow; i <= bottomRow; i++ {
+				b.WriteString(m.visible[i].Raw)
+				if i < bottomRow {
+					b.WriteByte('\n')
+				}
+			}
+			return b.String()
+		}
+
+		// Rectangular block selection across rows: [minCol : maxCol] for each row!
+		minCol := m.charSelStart
+		maxCol := m.charSelEnd
+		if minCol > maxCol {
+			minCol, maxCol = maxCol, minCol
+		}
+
+		var lines []string
+		for rIdx := topRow; rIdx <= bottomRow; rIdx++ {
+			plainText := m.selectedRowPlainText(rIdx)
+			runes := []rune(plainText)
+			if minCol >= len(runes) {
+				lines = append(lines, "")
+				continue
+			}
+			end := maxCol
+			if end > len(runes) {
+				end = len(runes)
+			}
+			lines = append(lines, string(runes[minCol:end]))
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	return ""
 }

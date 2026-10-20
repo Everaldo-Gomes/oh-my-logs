@@ -58,6 +58,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case keyMatches(msg, m.keys.Quit):
+		hasCharSel := m.charSelStart >= 0 && m.charSelEnd >= 0 && m.charSelStart != m.charSelEnd
+		hasRowSel := m.selectionStart >= 0 && m.selectionEnd >= 0 &&
+			(m.selectionStart != m.selectionEnd || (m.selectionStart == 0 && m.selectionEnd == len(m.visible)-1 && len(m.visible) > 0))
+		if (msg.Type == tea.KeyCtrlC || msg.String() == "ctrl+c") && (hasCharSel || hasRowSel) {
+			return m.handleCopyKey()
+		}
 		m.saveSettings()
 		m.StopDiskLogger()
 		if m.source != nil {
@@ -577,6 +583,10 @@ func (m Model) handleNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 
 	case keyMatches(msg, m.keys.SelectDown), msg.String() == "shift+down":
 		resM, cmd := m.handleSelectDown()
+		return resM.(Model), cmd, true
+
+	case keyMatches(msg, m.keys.SelectAll), msg.String() == "ctrl+a":
+		resM, cmd := m.handleSelectAll()
 		return resM.(Model), cmd, true
 	}
 

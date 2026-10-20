@@ -253,6 +253,22 @@ func (m Model) renderPaneView(tab *Tab, tabIdx int, paneW int, paneH int, isFocu
 			renderedPrefix = "   "
 		}
 
+		var sCol, eCol int
+		var hasCharSel bool
+		if isFocused {
+			sCol, eCol, hasCharSel = m.rowCharSelection(absIdx)
+		}
+		if hasCharSel {
+			hasBg = false
+			cStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+			if isBookmarked {
+				bStyle := lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
+				renderedPrefix = cStyle.Render("▌") + bStyle.Render("★") + " "
+			} else {
+				renderedPrefix = cStyle.Render("▌  ")
+			}
+		}
+
 		contentW := paneW
 		vScrollChar := ""
 		if hasVScroll {
@@ -342,7 +358,13 @@ func (m Model) renderPaneView(tab *Tab, tabIdx int, paneW int, paneH int, isFocu
 			}
 
 			rowBody = strings.Join(cellParts, sep)
-			if isSelectedRow && isFocused && tab.CursorCol >= 0 {
+			if hasCharSel {
+				rowCurCol := -1
+				if absIdx == m.selectionEnd {
+					rowCurCol = m.cursorCol
+				}
+				rowBody = applyRowCursor(rowBody, rowCurCol, sCol, eCol)
+			} else if isSelectedRow && isFocused && tab.CursorCol >= 0 {
 				rowBody = applyRowCursor(rowBody, tab.CursorCol, tab.CharSelStart, tab.CharSelEnd)
 			}
 		}
