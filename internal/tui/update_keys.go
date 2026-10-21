@@ -36,6 +36,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleGameKey(msg)
 	case modeTXInput:
 		return m.handleTXKey(msg)
+	case modeShellInteractive:
+		return m.handleShellInteractiveKey(msg)
 	case modeSettings:
 		return m.handleSettingsKey(msg)
 	case modeFilePicker:
@@ -85,6 +87,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyMatches(msg, m.keys.SendTX):
 		m.mode = modeTXInput
 		m.txInput.Reset()
+		return m, nil
+
+	case keyMatches(msg, m.keys.ShellPassthrough):
+		m.mode = modeShellInteractive
+		m.shellAwaitingTab = false
+		m.shellInput.Reset()
 		return m, nil
 
 	case keyMatches(msg, m.keys.FilterPresets):
@@ -159,6 +167,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyMatches(msg, m.keys.AddMarker):
 		m.openMarkerPrompt()
 		return m, nil
+
+	case msg.String() == "d" || msg.String() == "delete" || msg.String() == "backspace":
+		if rec, ok := m.activeSelectedRecord(); ok && rec.IsMarker {
+			m.removeMarker(rec.ID)
+			return m, nil
+		}
 
 	case keyMatches(msg, m.keys.ViewDetail):
 		return m.openRowDetail()
@@ -902,6 +916,117 @@ func (m Model) handleTXKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		m.txInput.HandleKey(msg)
 	}
+	return m, nil
+}
+
+func (m Model) handleShellInteractiveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 1. Esc or Ctrl+] returns cleanly to normal log navigation
+	if keyMatches(msg, m.keys.Cancel) || msg.Type == tea.KeyEsc || msg.String() == "ctrl+]" {
+		m.mode = modeNormal
+		m.shellAwaitingTab = false
+		m.shellInput.Reset()
+		return m, nil
+	}
+
+	// 2. Disconnected check
+	if m.source == nil {
+		m.message = "Shell TX failed: disconnected"
+		m.mode = modeNormal
+		m.shellAwaitingTab = false
+		return m, nil
+	}
+
+	// 3. Tab: Forward ASCII 0x09 directly to MCU shell for native autocompletion!
+	if msg.Type == tea.KeyTab || msg.String() == "tab" {
+		m.shellAwaitingTab = true
+		_, _ = m.source.Write([]byte{'\t'})
+		return m, nil
+	}
+
+	// Any non-Tab key clears active Tab completion expectation
+	m.shellAwaitingTab = false
+
+	// 4. Ctrl+C: Send ASCII 0x03 interrupt signal to MCU shell
+	if msg.Type == tea.KeyCtrlC || msg.String() == "ctrl+c" {
+		_, _ = m.source.Write([]byte{0x03})
+		m.shellInput.Reset()
+		return m, nil
+	}
+
+	// 5. Ctrl+D: Send EOF (0x04)
+	if msg.Type == tea.KeyCtrlD || msg.String() == "ctrl+d" {
+		_, _ = m.source.Write([]byte{0x04})
+		return m, nil
+	}
+
+	// 6. Up / Down: Send ANSI arrow sequences for MCU shell history navigation,
+	// and update local input history
+	if msg.Type == tea.KeyUp || msg.String() == "up" {
+		_, _ = m.source.Write([]byte("\x1b[A"))
+		m.shellInput.HistoryPrev()
+		return m, nil
+	}
+	if msg.Type == tea.KeyDown || msg.String() == "down" {
+		_, _ = m.source.Write([]byte("\x1b[B"))
+		m.shellInput.HistoryNext()
+		return m, nil
+	}
+
+	// 7. Left / Right: Send ANSI cursor movement to MCU shell
+	if msg.Type == tea.KeyLeft || msg.String() == "left" {
+		_, _ = m.source.Write([]byte("\x1b[D"))
+		m.shellInput.HandleKey(msg)
+		return m, nil
+	}
+	if msg.Type == tea.KeyRight || msg.String() == "right" {
+		_, _ = m.source.Write([]byte("\x1b[C"))
+		m.shellInput.HandleKey(msg)
+		return m, nil
+	}
+
+	// 8. Backspace: Forward backspace (0x7F) to MCU shell
+	if msg.Type == tea.KeyBackspace || msg.String() == "backspace" {
+		_, _ = m.source.Write([]byte{0x7F})
+		m.shellInput.HandleKey(msg)
+		return m, nil
+	}
+
+	// 9. Enter: Transmit command line ending, save history, record TX badge.
+	// NOTE: In interactive passthrough mode, character runes were ALREADY transmitted
+	// character-by-character as the engineer typed them. Therefore, pressing Enter must
+	// ONLY transmit the configured line ending suffix (e.g. \r or \r\n), NOT re-transmit
+	// the entire string `val + ending`, which would result in command duplication (e.g. "os_msgos_msg").
+	if keyMatches(msg, m.keys.Confirm) || msg.Type == tea.KeyEnter {
+		val := m.shellInput.Value
+		cleanVal := serial.CleanTerminalLine(val)
+		if cleanVal != "" {
+			val = cleanVal
+		}
+		ending := m.txEnding.Suffix()
+		if ending == "" {
+			ending = "\r"
+		}
+		_, _ = m.source.Write([]byte(ending))
+		if val != "" {
+			m.recordTXMessage(val)
+			m.lastTXCommand = strings.TrimSpace(val)
+			if m.shellInput.AddHistory(val) {
+				m.saveSettings()
+			}
+		}
+		m.shellInput.Reset()
+		return m, nil
+	}
+
+	// 10. Normal character typing: send characters directly over serial TX
+	runes := msg.Runes
+	if len(runes) > 0 {
+		rawBytes := []byte(string(runes))
+		_, _ = m.source.Write(rawBytes)
+		m.shellInput.Insert(string(runes))
+		return m, nil
+	}
+
 	return m, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/brenoniehues/oh-my-logs/internal/record"
+	"github.com/brenoniehues/oh-my-logs/internal/serial"
 	"github.com/brenoniehues/oh-my-logs/internal/timing"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -40,6 +41,7 @@ func (m Model) viewTable() string {
 		focusedAbsIdx = m.searchMatches[m.searchCursor]
 	}
 
+	curFormat := m.currentTab().DisplayFormat
 	cols := m.effectiveColumns()
 	colWidths := m.computeColWidths(cols)
 
@@ -136,6 +138,8 @@ func (m Model) viewTable() string {
 			hasBg = true
 			rowBg = colorTxBg
 			renderedPrefix = lipgloss.NewStyle().Background(rowBg).Render("   ")
+		case isUnparsedRow(r, cols, curFormat):
+			renderedPrefix = " " + theme.Muted.Render("│") + " "
 		default:
 			renderedPrefix = "   "
 		}
@@ -159,6 +163,11 @@ func (m Model) viewTable() string {
 		var rowBody string
 		if r.IsMarker {
 			rowBody = formatMarkerRow(r, availW, hasBg, rowBg)
+		} else if isUnparsedRow(r, cols, curFormat) {
+			rowBody = formatUnparsedRow(r, availW, hasBg, rowBg, isMatch, m.searchInput.Value)
+			if isSelectedRow && m.cursorCol >= 0 {
+				rowBody = applyRowCursor(rowBody, m.cursorCol, m.charSelStart, m.charSelEnd)
+			}
 		} else {
 			var cellParts []string
 			for colIdx, col := range cols {
@@ -310,4 +319,68 @@ func (m Model) searchMatchSet() map[int]bool {
 		set[idx] = true
 	}
 	return set
+}
+
+// isUnparsedRow identifies records that are unparsed console output (such as subcommand help tables,
+// stack traces, or command responses) that do not contain structured log columns (level, uptime, module).
+func isUnparsedRow(r record.Record, cols []record.Column, curFormat DisplayFormat) bool {
+	if curFormat != FormatParsed {
+		return false
+	}
+	if r.IsMarker {
+		return false
+	}
+	if r.Fields["level"] == "TX" {
+		return false
+	}
+
+	// Must have at least one structured column defined in cols (e.g. level, module, uptime)
+	hasStructuredCol := false
+	for _, col := range cols {
+		switch col.Field {
+		case "message", "raw", "_delta", "time", "_len", "_hex", "_bin", "_ascii":
+			continue
+		default:
+			hasStructuredCol = true
+		}
+	}
+	if !hasStructuredCol {
+		return false
+	}
+
+	if r.Fields["_raw"] != "" {
+		return true
+	}
+
+	// If structured columns exist, verify that all of them are empty in this record
+	for _, col := range cols {
+		switch col.Field {
+		case "message", "raw", "_delta", "time", "_len", "_hex", "_bin", "_ascii":
+			continue
+		default:
+			if r.Fields[col.Field] != "" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func formatUnparsedRow(r record.Record, availW int, hasBg bool, rowBg lipgloss.TerminalColor, isMatch bool, searchVal string) string {
+	val := r.Raw
+	if val == "" {
+		val = r.Fields["message"]
+	}
+	clean := sanitizeCellValue(serial.ExpandTabs(val, 8))
+	cellStyle := theme.Content
+	if hasBg && rowBg != nil {
+		cellStyle = cellStyle.Background(rowBg)
+	}
+
+	if isMatch && searchVal != "" {
+        matchCase := false
+        wholeWord := false
+        return highlightSubstring(clean, searchVal, matchCase, wholeWord, cellStyle)
+	}
+	return cellStyle.Render(clean)
 }

@@ -1,7 +1,6 @@
 package ipc
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -54,13 +53,8 @@ func (c *Client) call(action string, paramData interface{}, resultDest interface
 	}
 
 	var resp Response
-	scanner := bufio.NewScanner(conn)
-	if !scanner.Scan() {
-		return fmt.Errorf("empty IPC response from oml server")
-	}
-
-	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
-		return fmt.Errorf("failed decoding IPC response: %w", err)
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return fmt.Errorf("failed decoding IPC response from oml server: %w", err)
 	}
 
 	if !resp.Success {

@@ -420,6 +420,10 @@ func (m Model) viewStatusBar() string {
 		parts = append(parts, theme.Accent.Bold(true).Render(fmt.Sprintf("▤ %s", curFormat.Tag())))
 	}
 
+	if m.mode == modeShellInteractive {
+		parts = append(parts, theme.TitleConnErr.Render("⚡ SHELL ACTIVE"))
+	}
+
 	parts = append(parts, tsStr)
 	parts = append(parts, followStr)
 
@@ -494,6 +498,16 @@ func (m Model) renderKeyBarContent() string {
 		help := theme.Muted.Render("  [Enter: send · Tab: line ending · ↑/↓: history · ←/→: cursor · ^V: paste · Esc: cancel]")
 		return "  " + prompt + text + help
 
+	case modeShellInteractive:
+		promptLabel := m.shellPrompt
+		if promptLabel == "" {
+			promptLabel = "$ "
+		}
+		prompt := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("📟 SHELL: " + promptLabel)
+		text := m.shellInput.Render(theme.Content)
+		help := theme.Muted.Render("  [Tab: MCU completion · ↑/↓: MCU history · ^C: interrupt · Enter: send · Esc: exit to logs]")
+		return "  " + prompt + text + help
+
 	case modeSettings:
 		return "  " + theme.Muted.Render("Settings: [↑/↓: select · ←/→: adjust · Space: toggle · Enter/Esc: close]")
 
@@ -504,12 +518,20 @@ func (m Model) renderKeyBarContent() string {
 		return "  " + theme.Muted.Render("Themes: [↑/↓: live preview · Enter: apply · Esc: cancel]")
 
 	case modeMarkerPrompt:
+		if m.markerIsEditing {
+			return "  " + theme.KeyName.Render("Enter") + " " + theme.Muted.Render("save changes") + "  ·  " +
+				theme.KeyName.Render("^D") + " " + theme.Muted.Render("delete marker") + "  ·  " +
+				theme.KeyName.Render("Esc") + " " + theme.Muted.Render("cancel")
+		}
 		return "  " + theme.KeyName.Render("Enter") + " " + theme.Muted.Render("insert marker") + "  ·  " + theme.KeyName.Render("Esc") + " " + theme.Muted.Render("cancel")
 
 	case modeHelp:
 		return "  " + theme.Muted.Render("Press ") + theme.KeyName.Render("?") + theme.Muted.Render(", ") + theme.KeyName.Render("Esc") + theme.Muted.Render(", or ") + theme.KeyName.Render("q") + theme.Muted.Render(" to close help")
 
 	case modeRowDetail:
+		if r, ok := m.activeInspectorRecord(); ok && r.IsMarker {
+			return "  " + theme.Muted.Render("Log Inspector: [↑/↓: scroll · ←/→: prev/next · d: delete marker · m: edit · Esc/Enter: close]")
+		}
 		return "  " + theme.Muted.Render("Log Inspector: [↑/↓: scroll · ←/→: prev/next · y: copy detail · Y: copy raw · b: pin · m: mark · Esc/Enter: close]")
 
 	default:
@@ -535,6 +557,8 @@ func (m Model) renderKeyBarContent() string {
 				}
 				count := end - start + 1
 				candidates = append(candidates, hint("y", fmt.Sprintf("copy (%d)", count)))
+			} else if rec, ok := m.activeSelectedRecord(); ok && rec.IsMarker {
+				candidates = append(candidates, hint("d", "delete marker"), hint("m", "edit marker"), hint("Enter", "detail"))
 			} else {
 				candidates = append(candidates, hint("Enter", "detail"), hint("y", "copy"))
 			}
@@ -619,16 +643,14 @@ func (m Model) renderKeyBarContent() string {
 				hint(",", "⚙ cfg"),
 				hint("J", "time"),
 				hint("o", "cols"),
-				hint("m", "mark"),
 				hint("s", "save"),
+				hint("p", "port"),
 				hint("Space", pauseLabel),
 				hint("c", "clear"),
 				hint("i", "send"),
+				hint("I", "shell"),
 				hint("|", "split"),
 			)
-			if (m.connState == ConnConnected || m.serialCfg.Port != "") && !m.isFileSource {
-				candidates = append(candidates, hint("p", "port"))
-			}
 		}
 
 		// Adaptive width budget:
