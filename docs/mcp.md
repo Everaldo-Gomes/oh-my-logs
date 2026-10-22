@@ -90,8 +90,9 @@ The MCP server exposes standard tools discoverable automatically by LLMs:
 - `get_device_status`: Returns current state (`connected`, `port`, `baud`, `profile`, `buffer_count`, `buffer_cap`, `uptime_sec`).
 
 ### Log Inspection & Analysis
-- `get_recent_logs`: Retrieves recent records from the ring buffer.
-  - `count`: Number of lines to return (default: `50`, max: `1000`).
+- `get_recent_logs`: Retrieves recent records from the in-memory ring buffer (including pre-existing logs from active `oml` TUI sessions).
+  - `count`: Number of lines to return (default: `50`, max: `10000`).
+  - `all`: Boolean flag to retrieve all available records from memory history regardless of count limit (default: `false`).
   - `min_level`: Filter by minimum severity level (`DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`).
   - `module`: Filter by module or tag name substring.
   - `since_id`: Only return records created after this ID (milestone checkpointing).

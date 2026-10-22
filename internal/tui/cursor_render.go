@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
+	"unicode"
+
 	"regexp"
+	"github.com/brenoniehues/oh-my-logs/internal/serial"
 	"github.com/brenoniehues/oh-my-logs/internal/timing"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -55,7 +59,8 @@ func padOrTrunc(s string, width int) string {
 
 // applyRowCursor overlays a character-level cursor and selection highlight on a rendered rowBody.
 func applyRowCursor(rowBody string, cursorCol int, selStart int, selEnd int) string {
-	if cursorCol < 0 {
+	hasSel := selStart >= 0 && selEnd >= 0 && selStart != selEnd
+	if !hasSel && cursorCol < 0 {
 		return rowBody
 	}
 	w := lipgloss.Width(rowBody)
@@ -72,7 +77,6 @@ func applyRowCursor(rowBody string, cursorCol int, selStart int, selEnd int) str
 	cursorStyle := lipgloss.NewStyle().Background(colorCyan).Foreground(lipgloss.Color("#000000")).Bold(true)
 	selStyle := lipgloss.NewStyle().Background(colorAccent).Foreground(lipgloss.Color("#000000"))
 
-	hasSel := selStart >= 0 && selEnd >= 0 && selStart != selEnd
 	if !hasSel {
 		before := ansiCut(rowBody, 0, cursorCol)
 		curChar := ansiCut(rowBody, cursorCol, 1)
@@ -97,8 +101,16 @@ func applyRowCursor(rowBody string, cursorCol int, selStart int, selEnd int) str
 	left := ansiCut(rowBody, 0, minSel)
 	right := ansiCut(rowBody, maxSel, w-maxSel)
 
+	if cursorCol < 0 {
+		selPart := ansiCut(rowBody, minSel, maxSel-minSel)
+		return left + selStyle.Render(ansi.Strip(selPart)) + right
+	}
+
 	var mid string
-	if cursorCol == minSel {
+	if cursorCol < minSel {
+		selPart := ansiCut(rowBody, minSel, maxSel-minSel)
+		mid = selStyle.Render(ansi.Strip(selPart))
+	} else if cursorCol == minSel {
 		curChar := ansiCut(rowBody, cursorCol, 1)
 		if curChar == "" {
 			curChar = " "
@@ -132,7 +144,34 @@ func (m Model) selectedRowPlainText(absIdx int) string {
 		return ""
 	}
 	r := m.visible[absIdx]
+	if r.IsMarker {
+		ts := ""
+		if !r.Timestamp.IsZero() {
+			ts = r.Timestamp.Format("15:04:05.000")
+		} else if r.Fields["time"] != "" {
+			ts = r.Fields["time"]
+		}
+		if r.MarkerNote != "" {
+			if ts != "" {
+				return fmt.Sprintf("── 📌 MARKER [%s]: %s", ts, r.MarkerNote)
+			}
+			return fmt.Sprintf("── 📌 MARKER: %s", r.MarkerNote)
+		}
+		if ts != "" {
+			return fmt.Sprintf("── 📌 MARKER [%s]", ts)
+		}
+		return "── 📌 MARKER"
+	}
+
 	cols := m.effectiveColumns()
+	if isUnparsedRow(r, cols, m.displayFormat) {
+		val := r.Raw
+		if val == "" {
+			val = r.Fields["message"]
+		}
+		return sanitizeCellValue(serial.ExpandTabs(val, 8))
+	}
+
 	colWidths := m.computeColWidths(cols)
 
 	var cellParts []string
@@ -216,4 +255,105 @@ func highlightSubstring(cell, q string, matchCase, wholeWord bool, baseStyle lip
 	}
 
 	return sb.String()
+}
+
+// isWordRune returns whether r should be considered part of a selectable word / token.
+func isWordRune(r rune) bool {
+	if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		return true
+	}
+	switch r {
+	case '_', '.', '-', ':', '/', '@', '#', '$', '+', '%', '=', '~':
+		return true
+	default:
+		return false
+	}
+}
+
+// findWordAt returns the start and end column indices (runes) and the word text
+// containing the specified column in text.
+func findWordAt(text string, col int) (int, int, string) {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return -1, -1, ""
+	}
+	if col < 0 {
+		col = 0
+	}
+	if col >= len(runes) {
+		col = len(runes) - 1
+	}
+
+	// If the clicked character is whitespace or non-word, look for adjacent word rune
+	if !isWordRune(runes[col]) {
+		if col > 0 && isWordRune(runes[col-1]) {
+			col--
+		} else if col+1 < len(runes) && isWordRune(runes[col+1]) {
+			col++
+		} else {
+			// Single punctuation or space character
+			return col, col + 1, string(runes[col : col+1])
+		}
+	}
+
+	start := col
+	for start > 0 && isWordRune(runes[start-1]) {
+		start--
+	}
+
+	end := col + 1
+	for end < len(runes) && isWordRune(runes[end]) {
+		end++
+	}
+
+	return start, end, string(runes[start:end])
+}
+
+// rowCharSelection calculates the start and end column character selection on row absIdx.
+func (m Model) rowCharSelection(absIdx int) (int, int, bool) {
+	if absIdx < 0 || absIdx >= len(m.visible) {
+		return -1, -1, false
+	}
+
+	// 1. Single row drag or char selection on selectedRow
+	if m.selectionStart < 0 || m.selectionEnd < 0 || m.selectionStart == m.selectionEnd {
+		targetRow := m.selectedRow
+		if targetRow < 0 {
+			targetRow = m.selectionStart
+		}
+		if absIdx == targetRow && m.charSelStart >= 0 && m.charSelEnd >= 0 && m.charSelStart != m.charSelEnd {
+			minCol, maxCol := m.charSelStart, m.charSelEnd
+			if minCol > maxCol {
+				minCol, maxCol = maxCol, minCol
+			}
+			return minCol, maxCol, true
+		}
+		return -1, -1, false
+	}
+
+	// 2. Multi-row rectangular block selection: [minCol : maxCol] for every row in range
+	if m.selectionStart >= 0 && m.selectionEnd >= 0 && m.selectionStart != m.selectionEnd {
+		if m.charSelStart < 0 || m.charSelEnd < 0 || m.charSelStart == m.charSelEnd {
+			return -1, -1, false
+		}
+
+		topRow := m.selectionStart
+		bottomRow := m.selectionEnd
+		if topRow > bottomRow {
+			topRow, bottomRow = bottomRow, topRow
+		}
+
+		if absIdx < topRow || absIdx > bottomRow {
+			return -1, -1, false
+		}
+
+		minCol := m.charSelStart
+		maxCol := m.charSelEnd
+		if minCol > maxCol {
+			minCol, maxCol = maxCol, minCol
+		}
+		return minCol, maxCol, true
+	}
+
+	return -1, -1, false
 }

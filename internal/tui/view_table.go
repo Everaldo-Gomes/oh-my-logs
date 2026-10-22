@@ -144,6 +144,18 @@ func (m Model) viewTable() string {
 			renderedPrefix = "   "
 		}
 
+		sCol, eCol, hasCharSel := m.rowCharSelection(absIdx)
+		if hasCharSel {
+			hasBg = false
+			cStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+			if isBookmarked {
+				bStyle := lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
+				renderedPrefix = cStyle.Render("▌") + bStyle.Render("★") + " "
+			} else {
+				renderedPrefix = cStyle.Render("▌  ")
+			}
+		}
+
 		contentW := tableWidth
 		vScrollChar := ""
 		if hasVScroll {
@@ -165,7 +177,13 @@ func (m Model) viewTable() string {
 			rowBody = formatMarkerRow(r, availW, hasBg, rowBg)
 		} else if isUnparsedRow(r, cols, curFormat) {
 			rowBody = formatUnparsedRow(r, availW, hasBg, rowBg, isMatch, m.searchInput.Value)
-			if isSelectedRow && m.cursorCol >= 0 {
+			if hasCharSel {
+				rowCurCol := -1
+				if absIdx == m.selectionEnd {
+					rowCurCol = m.cursorCol
+				}
+				rowBody = applyRowCursor(rowBody, rowCurCol, sCol, eCol)
+			} else if isSelectedRow && m.cursorCol >= 0 {
 				rowBody = applyRowCursor(rowBody, m.cursorCol, m.charSelStart, m.charSelEnd)
 			}
 		} else {
@@ -238,7 +256,13 @@ func (m Model) viewTable() string {
 			}
 
 			rowBody = strings.Join(cellParts, sep)
-			if isSelectedRow && m.cursorCol >= 0 {
+			if hasCharSel {
+				rowCurCol := -1
+				if absIdx == m.selectionEnd {
+					rowCurCol = m.cursorCol
+				}
+				rowBody = applyRowCursor(rowBody, rowCurCol, sCol, eCol)
+			} else if isSelectedRow && m.cursorCol >= 0 {
 				rowBody = applyRowCursor(rowBody, m.cursorCol, m.charSelStart, m.charSelEnd)
 			}
 		}

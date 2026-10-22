@@ -172,14 +172,14 @@ func TestMouseDoubleClickTableRow_Copy(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	if !strings.Contains(m.message, "Copied row to clipboard") {
-		t.Errorf("expected message to contain 'Copied row to clipboard', got %q", m.message)
+	if !strings.Contains(m.message, "Copied 'line' to clipboard") {
+		t.Errorf("expected message to contain \"Copied 'line' to clipboard\", got %q", m.message)
 	}
 
 	clipText, err := clipboard.Read()
 	if err == nil {
-		if clipText != "line to copy" {
-			t.Errorf("expected clipboard to have 'line to copy', got %q", clipText)
+		if clipText != "line" {
+			t.Errorf("expected clipboard to have 'line', got %q", clipText)
 		}
 	}
 }

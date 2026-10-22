@@ -548,7 +548,7 @@ func (m Model) renderKeyBarContent() string {
 				if diff < 0 {
 					diff = -diff
 				}
-				candidates = append(candidates, hint("y", fmt.Sprintf("copy (%d chars)", diff)), hint("Esc", "clear sel"))
+				candidates = append(candidates, hint("y/^C", fmt.Sprintf("copy (%d chars)", diff)), hint("Esc", "clear sel"))
 			} else if m.selectionStart >= 0 && m.selectionEnd >= 0 && m.selectionStart != m.selectionEnd {
 				start := m.selectionStart
 				end := m.selectionEnd
@@ -556,11 +556,11 @@ func (m Model) renderKeyBarContent() string {
 					start, end = end, start
 				}
 				count := end - start + 1
-				candidates = append(candidates, hint("y", fmt.Sprintf("copy (%d)", count)))
+				candidates = append(candidates, hint("y/^C", fmt.Sprintf("copy (%d)", count)), hint("Esc", "clear sel"))
 			} else if rec, ok := m.activeSelectedRecord(); ok && rec.IsMarker {
 				candidates = append(candidates, hint("d", "delete marker"), hint("m", "edit marker"), hint("Enter", "detail"))
 			} else {
-				candidates = append(candidates, hint("Enter", "detail"), hint("y", "copy"))
+				candidates = append(candidates, hint("Enter", "detail"), hint("y", "copy"), hint("^A", "all"))
 			}
 			candidates = append(candidates,
 				hint("←/→", "char"),
