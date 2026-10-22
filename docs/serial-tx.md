@@ -55,14 +55,27 @@ When a command is transmitted, `oml` immediately echoes it into the in-memory lo
 
 ---
 
-## 5. Keyboard Reference
+## 5. Interactive Shell Passthrough Mode ("minicom-inside-oml") (`I` / `Ctrl+I`)
+
+While the one-line TX prompt (`i`) is ideal for discrete AT commands or single shell commands, embedded systems frequently run complex interactive consoles (e.g. Zephyr shell with `<Tab>` autocomplete, MicroPython REPL, or custom menu systems).
+
+Press **`I`** or **`Ctrl+I`** to enter **Interactive Shell Passthrough** mode:
+- **Raw Byte Passthrough**: Keyboard input is forwarded directly to the serial port in real time, supporting arrow navigation, backspace, `<Tab>` completion, and escape sequences.
+- **Signal Forwarding**: Pressing `Ctrl+C` sends the `0x03` interrupt byte to the device to abort running commands or stop loops without quitting `oml`.
+- **Exit Passthrough**: Press **`Ctrl+D`** or **`Ctrl+]`** (or `Esc`) to exit passthrough mode and return to normal log inspection.
+
+---
+
+## 6. Keyboard Reference
 
 | Key | Action |
 |-----|--------|
-| `i` | Open interactive serial send prompt |
+| `i` / `:` | Open interactive serial send prompt |
 | `Enter` | Transmit command with active line ending |
 | `Ctrl+E` | Cycle line ending (`CRLF` $\rightarrow$ `LF` $\rightarrow$ `CR` $\rightarrow$ `None`) |
 | `↑` / `Ctrl+P` | Previous command in history |
 | `↓` / `Ctrl+N` | Next command in history / restore draft |
 | `Ctrl+V` | Paste text from system clipboard into prompt |
-| `Esc` | Cancel and close prompt |
+| `I` / `Ctrl+I` | Enter **Interactive Shell Passthrough** mode (`<Tab>` completion, arrows, `^C`) |
+| `Ctrl+D` / `Ctrl+]` / `Esc` | Exit shell passthrough mode |
+| `Esc` | Cancel and close single-line TX prompt |

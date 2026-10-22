@@ -16,64 +16,27 @@ func (m Model) handleCopyKey() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// 0. If character selection active on a row, copy substring
-	if m.charSelStart >= 0 && m.charSelEnd >= 0 && m.charSelStart != m.charSelEnd {
-		targetIdx := m.selectedRow
-		if targetIdx < 0 || targetIdx >= len(m.visible) {
-			targetIdx = m.scrollOffset
-		}
-		if targetIdx >= 0 && targetIdx < len(m.visible) {
-			plainText := m.selectedRowPlainText(targetIdx)
-			runes := []rune(plainText)
-			minSel, maxSel := m.charSelStart, m.charSelEnd
-			if minSel > maxSel {
-				minSel, maxSel = maxSel, minSel
+	text := m.selectedText()
+	if text != "" {
+		_ = clipboard.Copy(text)
+		lines := strings.Split(text, "\n")
+		if len(lines) == 1 {
+			if m.charSelStart >= 0 && m.charSelEnd >= 0 && m.charSelStart != m.charSelEnd {
+				m.message = fmt.Sprintf("✓ Copied %d chars to clipboard", len([]rune(text)))
+			} else {
+				m.message = "✓ Copied row to clipboard"
 			}
-			if minSel < 0 {
-				minSel = 0
-			}
-			if minSel < len(runes) {
-				if maxSel > len(runes) {
-					maxSel = len(runes)
-				}
-				sub := string(runes[minSel:maxSel])
-				_ = clipboard.Copy(sub)
-				m.message = fmt.Sprintf("✓ Copied %d chars to clipboard", len([]rune(sub)))
-				return m, nil
-			}
-		}
-	}
-
-	// 1. If multi-row selection active, copy range
-	if m.selectionStart >= 0 && m.selectionEnd >= 0 && m.selectionStart != m.selectionEnd {
-		start := m.selectionStart
-		end := m.selectionEnd
-		if start > end {
-			start, end = end, start
-		}
-		if start < 0 {
-			start = 0
-		}
-		if end >= len(m.visible) {
-			end = len(m.visible) - 1
-		}
-		var b strings.Builder
-		count := 0
-		for i := start; i <= end; i++ {
-			b.WriteString(m.visible[i].Raw)
-			b.WriteByte('\n')
-			count++
-		}
-		_ = clipboard.Copy(strings.TrimRight(b.String(), "\n"))
-		if d, ok := m.selectionDelta(); ok {
-			m.message = fmt.Sprintf("✓ Copied %d rows (Δt: %s) to clipboard", count, timing.FormatDelta(d))
 		} else {
-			m.message = fmt.Sprintf("✓ Copied %d rows to clipboard", count)
+			if d, ok := m.selectionDelta(); ok {
+				m.message = fmt.Sprintf("✓ Copied %d rows (Δt: %s) to clipboard", len(lines), timing.FormatDelta(d))
+			} else {
+				m.message = fmt.Sprintf("✓ Copied %d rows to clipboard", len(lines))
+			}
 		}
 		return m, nil
 	}
 
-	// 2. If single row selected, copy it
+	// Fallback single row copy
 	targetIdx := m.selectedRow
 	if targetIdx < 0 || targetIdx >= len(m.visible) {
 		if m.follow && len(m.visible) > 0 {
@@ -153,22 +116,37 @@ func (m Model) handleMousePress(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.selectedRow = absIdx
 			m.selectionStart = absIdx
 			m.selectionEnd = absIdx
+			var col int
 			if msg.X >= prefixWidth {
-				m.cursorCol = msg.X - prefixWidth + m.scrollX
+				col = msg.X - prefixWidth + m.scrollX
 			} else {
-				m.cursorCol = 0
+				col = 0
 			}
+			m.cursorCol = col
 			m.charSelStart = -1
 			m.charSelEnd = -1
+			m.mousePressRow = absIdx
+			m.mousePressCol = col
+			m.mousePressBlock = msg.Alt || msg.Ctrl
 
 			now := time.Now()
 			if m.lastClickRow == absIdx && now.Sub(m.lastClickTime) < doubleClickThreshold {
-				// Double click: copy row to clipboard
-				_ = clipboard.Copy(m.visible[absIdx].Raw)
-				m.message = "✓ Copied row to clipboard"
+				// Double click: select word and copy to clipboard
+				plainText := m.selectedRowPlainText(absIdx)
+				wStart, wEnd, word := findWordAt(plainText, col)
+				if word != "" {
+					m.charSelStart = wStart
+					m.charSelEnd = wEnd
+					_ = clipboard.Copy(word)
+					m.message = fmt.Sprintf("✓ Copied '%s' to clipboard", word)
+				} else {
+					_ = clipboard.Copy(m.visible[absIdx].Raw)
+					m.message = "✓ Copied row to clipboard"
+				}
 			}
 			m.lastClickTime = now
 			m.lastClickRow = absIdx
+			m.lastClickCol = col
 			m.clampScroll()
 		}
 		return m, nil
@@ -181,6 +159,9 @@ func (m Model) handleMousePress(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	m.cursorCol = -1
 	m.charSelStart = -1
 	m.charSelEnd = -1
+	m.mousePressRow = -1
+	m.mousePressCol = -1
+	m.mousePressBlock = false
 	m.clampScroll()
 	return m, nil
 }
@@ -237,14 +218,27 @@ func (m Model) handleSplitTableMouseClick(msg tea.MouseMsg) (tea.Model, tea.Cmd)
 				m.cursorCol = col
 				m.charSelStart = -1
 				m.charSelEnd = -1
+				m.mousePressRow = absIdx
+				m.mousePressCol = col
+				m.mousePressBlock = msg.Alt || msg.Ctrl
 
 				now := time.Now()
 				if m.lastClickRow == absIdx && now.Sub(m.lastClickTime) < doubleClickThreshold {
-					_ = clipboard.Copy(m.visible[absIdx].Raw)
-					m.message = "✓ Copied row to clipboard"
+					plainText := m.selectedRowPlainText(absIdx)
+					wStart, wEnd, word := findWordAt(plainText, col)
+					if word != "" {
+						m.charSelStart = wStart
+						m.charSelEnd = wEnd
+						_ = clipboard.Copy(word)
+						m.message = fmt.Sprintf("✓ Copied '%s' to clipboard", word)
+					} else {
+						_ = clipboard.Copy(m.visible[absIdx].Raw)
+						m.message = "✓ Copied row to clipboard"
+					}
 				}
 				m.lastClickTime = now
 				m.lastClickRow = absIdx
+				m.lastClickCol = col
 
 				if m.syncScroll {
 					m.syncOtherPaneChronologically()
@@ -289,14 +283,27 @@ func (m Model) handleSplitTableMouseClick(msg tea.MouseMsg) (tea.Model, tea.Cmd)
 			m.cursorCol = col
 			m.charSelStart = -1
 			m.charSelEnd = -1
+			m.mousePressRow = absIdx
+			m.mousePressCol = col
+			m.mousePressBlock = msg.Alt || msg.Ctrl
 
 			now := time.Now()
 			if m.lastClickRow == absIdx && now.Sub(m.lastClickTime) < doubleClickThreshold {
-				_ = clipboard.Copy(m.visible[absIdx].Raw)
-				m.message = "✓ Copied row to clipboard"
+				plainText := m.selectedRowPlainText(absIdx)
+				wStart, wEnd, word := findWordAt(plainText, col)
+				if word != "" {
+					m.charSelStart = wStart
+					m.charSelEnd = wEnd
+					_ = clipboard.Copy(word)
+					m.message = fmt.Sprintf("✓ Copied '%s' to clipboard", word)
+				} else {
+					_ = clipboard.Copy(m.visible[absIdx].Raw)
+					m.message = "✓ Copied row to clipboard"
+				}
 			}
 			m.lastClickTime = now
 			m.lastClickRow = absIdx
+			m.lastClickCol = col
 
 			if m.syncScroll {
 				m.syncOtherPaneChronologically()
@@ -408,9 +415,14 @@ func (m Model) handleMouseMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	dataStartY := m.tableDataStartY()
 	dataEndY := dataStartY + m.tableHeight
+	paneStartX := 0
 	if m.splitMode == SplitVertical {
 		dataStartY = m.splitTableStartY() + splitPaneHeaderOverhead
 		dataEndY = m.splitTableStartY() + m.tableHeight + splitPaneHeaderOverhead
+		splitX := (m.width - 1) / 2
+		if m.activePane == 1 {
+			paneStartX = splitX + 1
+		}
 	} else if m.splitMode == SplitHorizontal {
 		splitStartY := m.splitTableStartY()
 		totalH := m.tableHeight + splitPaneHeaderOverhead
@@ -426,6 +438,13 @@ func (m Model) handleMouseMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	col := msg.X - paneStartX - prefixWidth + m.scrollX
+	if col < 0 {
+		col = 0
+	}
+
+	isBlock := m.mousePressBlock || msg.Alt || msg.Ctrl
+
 	if msg.Y < dataStartY {
 		// Dragging above table viewport: auto-scroll up
 		if m.scrollOffset > 0 {
@@ -433,7 +452,26 @@ func (m Model) handleMouseMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.clampScroll()
 		}
 		m.selectionEnd = m.scrollOffset
+		m.cursorCol = col
 		m.follow = false
+		if isBlock && m.mousePressCol >= 0 {
+			m.charSelStart = m.mousePressCol
+			m.charSelEnd = col
+			top, bot := m.selectionStart, m.selectionEnd
+			if top > bot {
+				top, bot = bot, top
+			}
+			m.message = fmt.Sprintf("%d rows block selected (release to copy)", bot-top+1)
+		} else {
+			m.charSelStart = -1
+			m.charSelEnd = -1
+			top, bot := m.selectionStart, m.selectionEnd
+			if top > bot {
+				top, bot = bot, top
+			}
+			m.message = fmt.Sprintf("%d rows selected (press y or Ctrl+C to copy)", bot-top+1)
+		}
+		return m, nil
 	} else if msg.Y >= dataEndY {
 		// Dragging below table viewport: auto-scroll down
 		m.scrollOffset++
@@ -444,7 +482,26 @@ func (m Model) handleMouseMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			endIdx = len(m.visible) - 1
 		}
 		m.selectionEnd = endIdx
+		m.cursorCol = col
 		m.follow = false
+		if isBlock && m.mousePressCol >= 0 {
+			m.charSelStart = m.mousePressCol
+			m.charSelEnd = col
+			top, bot := m.selectionStart, m.selectionEnd
+			if top > bot {
+				top, bot = bot, top
+			}
+			m.message = fmt.Sprintf("%d rows block selected (release to copy)", bot-top+1)
+		} else {
+			m.charSelStart = -1
+			m.charSelEnd = -1
+			top, bot := m.selectionStart, m.selectionEnd
+			if top > bot {
+				top, bot = bot, top
+			}
+			m.message = fmt.Sprintf("%d rows selected (press y or Ctrl+C to copy)", bot-top+1)
+		}
+		return m, nil
 	} else {
 		rowOffset := msg.Y - dataStartY
 		absIdx := m.scrollOffset + rowOffset
@@ -454,11 +511,58 @@ func (m Model) handleMouseMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if absIdx < 0 {
 			absIdx = 0
 		}
+
 		m.selectionEnd = absIdx
+		m.cursorCol = col
 		m.follow = false
+
+		if absIdx == m.mousePressRow && m.mousePressCol >= 0 {
+			// Horizontal drag on the same row: character range selection
+			m.selectionStart = absIdx
+			m.selectionEnd = absIdx
+			m.selectedRow = absIdx
+			m.cursorCol = col
+			m.charSelStart = m.mousePressCol
+			m.charSelEnd = col
+			minSel, maxSel := m.charSelStart, m.charSelEnd
+			if minSel > maxSel {
+				minSel, maxSel = maxSel, minSel
+			}
+			m.message = fmt.Sprintf("%d chars selected", maxSel-minSel)
+			return m, nil
+		}
+
+		if isBlock && m.mousePressCol >= 0 {
+			// Drag across rows with modifier (Option/Alt or Ctrl): rectangular block selection
+			m.selectedRow = absIdx
+			m.selectionStart = m.mousePressRow
+			m.charSelStart = m.mousePressCol
+			m.charSelEnd = col
+			top := m.selectionStart
+			bot := m.selectionEnd
+			if top > bot {
+				top, bot = bot, top
+			}
+			m.message = fmt.Sprintf("%d rows block selected (release to copy)", bot-top+1)
+			return m, nil
+		}
+
+		// Drag across rows without modifier: select entire rows like a normal text editor
+		m.selectedRow = absIdx
+		m.selectionStart = m.mousePressRow
+		m.selectionEnd = absIdx
+		m.charSelStart = -1
+		m.charSelEnd = -1
+		top := m.selectionStart
+		bot := m.selectionEnd
+		if top > bot {
+			top, bot = bot, top
+		}
+		m.message = fmt.Sprintf("%d rows selected (press y or Ctrl+C to copy)", bot-top+1)
+		return m, nil
 	}
 	if start, end := m.selectionRange(); start >= 0 && end >= 0 {
-		m.message = m.selectionMessage(end-start+1, "press y to copy")
+		m.message = m.selectionMessage(end-start+1, "press y or Ctrl+C to copy")
 	}
 	return m, nil
 }
@@ -469,13 +573,32 @@ func (m Model) handleMouseRelease(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.mode != modeNormal && m.mode != modeSearch && m.mode != modeFilter && m.mode != modeTimeJump {
 		return m, nil
 	}
-	if start, end := m.selectionRange(); start >= 0 && end >= 0 {
+
+	// 1. Single row or multi-row block character selection: auto-copy on release
+	if m.charSelStart >= 0 && m.charSelEnd >= 0 && m.charSelStart != m.charSelEnd {
+		text := m.selectedText()
+		if text != "" {
+			_ = clipboard.Copy(text)
+			lines := strings.Split(text, "\n")
+			if len(lines) == 1 {
+				m.message = fmt.Sprintf("✓ Copied '%s' to clipboard", text)
+			} else {
+				m.message = fmt.Sprintf("✓ Copied %d rows block to clipboard", len(lines))
+			}
+		}
+	} else if start, end := m.selectionRange(); start >= 0 && end >= 0 {
 		m.selectedRow = m.selectionEnd
-		m.message = m.selectionMessage(end-start+1, "press y to copy")
+		m.message = m.selectionMessage(end-start+1, "press y or Ctrl+C to copy")
 	} else {
 		m.selectionStart = -1
 		m.selectionEnd = -1
+		m.charSelStart = -1
+		m.charSelEnd = -1
 	}
+
+	m.mousePressRow = -1
+	m.mousePressCol = -1
+	m.mousePressBlock = false
 	m.clampScroll()
 	return m, nil
 }
@@ -561,6 +684,28 @@ func (m Model) handleSelectDown() (tea.Model, tea.Cmd) {
 		m.message = "1 row selected"
 	}
 
+	return m, nil
+}
+
+func (m Model) handleSelectAll() (tea.Model, tea.Cmd) {
+	if len(m.visible) == 0 {
+		return m, nil
+	}
+	m.follow = false
+	m.selectionStart = 0
+	m.selectionEnd = len(m.visible) - 1
+	m.selectedRow = m.selectionEnd
+	m.charSelStart = -1
+	m.charSelEnd = -1
+	m.mousePressRow = -1
+	m.mousePressCol = -1
+	m.mousePressBlock = false
+	count := len(m.visible)
+	if count > 1 {
+		m.message = m.selectionMessage(count, "press y or Ctrl+C to copy")
+	} else {
+		m.message = "1 row selected (press y or Ctrl+C to copy)"
+	}
 	return m, nil
 }
 

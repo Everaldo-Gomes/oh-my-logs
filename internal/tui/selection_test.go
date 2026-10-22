@@ -2,10 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/brenoniehues/oh-my-logs/internal/clipboard"
 	"github.com/brenoniehues/oh-my-logs/internal/record"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func newTestSelectionModel(t *testing.T, bufferCap int) Model {
@@ -192,5 +196,507 @@ func TestPreserveSelectionOnIngest_RingBufferEviction(t *testing.T) {
 	// Once the record is evicted from the ring buffer, selection must cleanly clear to -1
 	if m.selectedRow != -1 {
 		t.Fatalf("expected selectedRow to clear to -1 after being evicted, got %d", m.selectedRow)
+	}
+}
+
+func TestFindWordAt(t *testing.T) {
+	tests := []struct {
+		name      string
+		text      string
+		col       int
+		wantStart int
+		wantEnd   int
+		wantWord  string
+	}{
+		{
+			name:      "empty text",
+			text:      "",
+			col:       0,
+			wantStart: -1,
+			wantEnd:   -1,
+			wantWord:  "",
+		},
+		{
+			name:      "single word middle",
+			text:      "hello world",
+			col:       2,
+			wantStart: 0,
+			wantEnd:   5,
+			wantWord:  "hello",
+		},
+		{
+			name:      "word with underscore and dash",
+			text:      "status: wifi-nxp_drv connected",
+			col:       12,
+			wantStart: 8,
+			wantEnd:   20,
+			wantWord:  "wifi-nxp_drv",
+		},
+		{
+			name:      "path or url",
+			text:      "see http://example.com/api/test for details",
+			col:       10,
+			wantStart: 4,
+			wantEnd:   31,
+			wantWord:  "http://example.com/api/test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, e, w := findWordAt(tt.text, tt.col)
+			if s != tt.wantStart || e != tt.wantEnd || w != tt.wantWord {
+				t.Errorf("findWordAt(%q, %d) = (%d, %d, %q); want (%d, %d, %q)",
+					tt.text, tt.col, s, e, w, tt.wantStart, tt.wantEnd, tt.wantWord)
+			}
+		})
+	}
+}
+
+func TestCtrlA_SelectAll(t *testing.T) {
+	m := newTestSelectionModel(t, 100)
+	for i := 1; i <= 15; i++ {
+		updated, _ := m.Update(lineMsg(fmt.Sprintf("log record %d", i)))
+		m = updated.(Model)
+	}
+
+	if len(m.visible) != 15 {
+		t.Fatalf("expected 15 visible records, got %d", len(m.visible))
+	}
+
+	// Press Ctrl+A
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m = updated.(Model)
+
+	if m.selectionStart != 0 || m.selectionEnd != 14 {
+		t.Fatalf("expected selection range 0..14, got %d..%d", m.selectionStart, m.selectionEnd)
+	}
+	if m.selectedRow != 14 {
+		t.Fatalf("expected selectedRow 14, got %d", m.selectedRow)
+	}
+	if m.follow {
+		t.Fatalf("expected follow to be false after SelectAll")
+	}
+
+	// Press Ctrl+C while SelectAll active: should copy and NOT quit
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("expected cmd to be nil (not tea.Quit)")
+	}
+	if m.message == "" || !containsSub(m.message, "Copied 15 rows") {
+		t.Fatalf("expected message mentioning copied 15 rows, got %q", m.message)
+	}
+}
+
+func TestCtrlC_ContextualQuitOrCopy(t *testing.T) {
+	m := newTestSelectionModel(t, 100)
+	for i := 1; i <= 5; i++ {
+		updated, _ := m.Update(lineMsg(fmt.Sprintf("entry %d", i)))
+		m = updated.(Model)
+	}
+
+	// Case 1: No selection active -> Ctrl+C triggers Quit
+	m.charSelStart = -1
+	m.charSelEnd = -1
+	m.selectionStart = -1
+	m.selectionEnd = -1
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatalf("expected Ctrl+C to return tea.Quit when no selection is active")
+	}
+
+	// Case 2: Character selection active -> Ctrl+C copies substring, does NOT quit
+	m.charSelStart = 1
+	m.charSelEnd = 4
+	m.selectedRow = 0
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("expected Ctrl+C to NOT quit when character selection is active")
+	}
+	if m.message == "" || !containsSub(m.message, "Copied") {
+		t.Fatalf("expected message confirming copy, got %q", m.message)
+	}
+
+	// Case 3: Multi-row selection active -> Ctrl+C copies rows, does NOT quit
+	m.charSelStart = -1
+	m.charSelEnd = -1
+	m.selectionStart = 0
+	m.selectionEnd = 2
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("expected Ctrl+C to NOT quit when multi-row selection is active")
+	}
+	if m.message == "" || !containsSub(m.message, "Copied 3 rows") {
+		t.Fatalf("expected message confirming 3 rows copied, got %q", m.message)
+	}
+}
+
+func containsSub(s, substr string) bool {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+func TestMouseDragSelection_CharacterSelection(t *testing.T) {
+	m := newTestModel()
+	m.width = 100
+	m.height = 30
+	m.recalcLayout()
+
+	updated, _ := m.Update(lineMsg("os_msg enable_logging wifi_nxp"))
+	m = updated.(Model)
+
+	tableStartY := m.tableDataStartY()
+	// Press at row 0, col prefixWidth + 7 ('e' of enable_logging)
+	pressX := prefixWidth + 7
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+		X:      pressX,
+		Y:      tableStartY,
+	})
+	m = updated.(Model)
+
+	if m.selectedRow != 0 {
+		t.Fatalf("expected selectedRow 0, got %d", m.selectedRow)
+	}
+
+	// Motion drag to col prefixWidth + 21 (end of enable_logging) on same row
+	dragX := prefixWidth + 21
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionMotion,
+		Button: tea.MouseButtonLeft,
+		X:      dragX,
+		Y:      tableStartY,
+	})
+	m = updated.(Model)
+
+	if m.charSelStart != 7 || m.charSelEnd != 21 {
+		t.Fatalf("expected char selection 7..21, got %d..%d", m.charSelStart, m.charSelEnd)
+	}
+
+	// Release mouse button -> should auto-copy the selected substring
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+		X:      dragX,
+		Y:      tableStartY,
+	})
+	m = updated.(Model)
+
+	if !containsSub(m.message, "Copied 'enable_logging' to clipboard") {
+		t.Fatalf("expected message to confirm copied 'enable_logging', got %q", m.message)
+	}
+}
+
+func TestMouseDragSelection_MultiLineNormalRows(t *testing.T) {
+	m := newTestModel()
+	m.width = 120
+	m.height = 30
+	m.recalcLayout()
+
+	lines := []string{
+		"first line of log records",
+		"second intermediate log line",
+		"third concluding line here",
+	}
+	for _, l := range lines {
+		updated, _ := m.Update(lineMsg(l))
+		m = updated.(Model)
+	}
+
+	tableStartY := m.tableDataStartY()
+
+	// 1. Mouse press on line 0 without modifier
+	pressX := prefixWidth + 6
+	updated, _ := m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+		X:      pressX,
+		Y:      tableStartY,
+	})
+	m = updated.(Model)
+
+	// 2. Normal drag down to line 2 without modifier -> selects entire rows
+	dragX := prefixWidth + 16
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionMotion,
+		Button: tea.MouseButtonLeft,
+		X:      dragX,
+		Y:      tableStartY + 2,
+	})
+	m = updated.(Model)
+
+	if m.selectionStart != 0 || m.selectionEnd != 2 {
+		t.Fatalf("expected selection range 0..2, got %d..%d", m.selectionStart, m.selectionEnd)
+	}
+	// Normal row drag must NOT set charSel bounds
+	if m.charSelStart != -1 || m.charSelEnd != -1 {
+		t.Fatalf("expected char bounds -1..-1 for normal row selection, got %d..%d", m.charSelStart, m.charSelEnd)
+	}
+	if !containsSub(m.message, "3 rows selected") {
+		t.Fatalf("expected message to show 3 rows selected, got %q", m.message)
+	}
+
+	// 3. Mouse release keeps rows selected without auto-copying
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+		X:      dragX,
+		Y:      tableStartY + 2,
+	})
+	m = updated.(Model)
+
+	if m.selectionStart != 0 || m.selectionEnd != 2 {
+		t.Fatalf("expected selection range to persist after release, got %d..%d", m.selectionStart, m.selectionEnd)
+	}
+
+	// 4. Pressing Ctrl+C copies the full 3 rows
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+
+	clipText, err := clipboard.Read()
+	if err != nil {
+		t.Fatalf("clipboard read error: %v", err)
+	}
+
+	expected := "first line of log records\nsecond intermediate log line\nthird concluding line here"
+	if clipText != expected {
+		t.Fatalf("expected clipboard:\n%q\ngot:\n%q", expected, clipText)
+	}
+}
+
+func TestMouseDragSelection_MultiLineRespectingRows(t *testing.T) {
+	m := newTestModel()
+	m.width = 120
+	m.height = 30
+	m.recalcLayout()
+
+	lines := []string{
+		"first line of log records",
+		"second intermediate log line",
+		"third concluding line here",
+	}
+	for _, l := range lines {
+		updated, _ := m.Update(lineMsg(l))
+		m = updated.(Model)
+	}
+
+	tableStartY := m.tableDataStartY()
+
+	// 1. Mouse press on line 0 at col 6 with Alt: true (Option on Mac)
+	pressX := prefixWidth + 6
+	updated, _ := m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+		Alt:    true,
+		X:      pressX,
+		Y:      tableStartY,
+	})
+	m = updated.(Model)
+
+	// 2. Drag down to line 2 at col 16 with Alt: true -> rectangular block selection
+	dragX := prefixWidth + 16
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionMotion,
+		Button: tea.MouseButtonLeft,
+		Alt:    true,
+		X:      dragX,
+		Y:      tableStartY + 2,
+	})
+	m = updated.(Model)
+
+	if m.selectionStart != 0 || m.selectionEnd != 2 {
+		t.Fatalf("expected selection range 0..2, got %d..%d", m.selectionStart, m.selectionEnd)
+	}
+	if m.charSelStart != 6 || m.charSelEnd != 16 {
+		t.Fatalf("expected char bounds 6..16, got %d..%d", m.charSelStart, m.charSelEnd)
+	}
+
+	// 3. Mouse release copies the rectangular block section
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+		Alt:    true,
+		X:      dragX,
+		Y:      tableStartY + 2,
+	})
+	m = updated.(Model)
+
+	if !containsSub(m.message, "Copied 3 rows block") {
+		t.Fatalf("expected message to show Copied 3 rows block, got %q", m.message)
+	}
+
+	clipText, err := clipboard.Read()
+	if err != nil {
+		t.Fatalf("clipboard read error: %v", err)
+	}
+
+	// Columns 6..16 on each of the 3 lines (a square block section!)
+	expected := "line of lo\n intermedi\nconcluding"
+	if clipText != expected {
+		t.Fatalf("expected clipboard:\n%q\ngot:\n%q", expected, clipText)
+	}
+}
+
+func TestMouseDragSelection_MultiLineUpward(t *testing.T) {
+	m := newTestModel()
+	m.width = 120
+	m.height = 30
+	m.recalcLayout()
+
+	lines := []string{
+		"alpha beginning line",
+		"beta middle line",
+		"gamma ending line",
+	}
+	for _, l := range lines {
+		updated, _ := m.Update(lineMsg(l))
+		m = updated.(Model)
+	}
+
+	tableStartY := m.tableDataStartY()
+
+	// 1. Mouse press on line 2 at col 12 with Option/Alt ('e' of "ending line")
+	pressX := prefixWidth + 12
+	updated, _ := m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+		Alt:    true,
+		X:      pressX,
+		Y:      tableStartY + 2,
+	})
+	m = updated.(Model)
+
+	// 2. Drag UP to line 0 at col 6 with Option/Alt ('b' of "beginning line")
+	dragX := prefixWidth + 6
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionMotion,
+		Button: tea.MouseButtonLeft,
+		Alt:    true,
+		X:      dragX,
+		Y:      tableStartY,
+	})
+	m = updated.(Model)
+
+	if m.selectionStart != 2 || m.selectionEnd != 0 {
+		t.Fatalf("expected selection range 2..0, got %d..%d", m.selectionStart, m.selectionEnd)
+	}
+
+	// 3. Mouse release copies the rectangular block section
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+		Alt:    true,
+		X:      dragX,
+		Y:      tableStartY,
+	})
+	m = updated.(Model)
+
+	clipText, err := clipboard.Read()
+	if err != nil {
+		t.Fatalf("clipboard read error: %v", err)
+	}
+
+	// Columns 6..12 on each of the 3 lines from line 0 to line 2 (square section!)
+	expected := "beginn\niddle \nending"
+	if clipText != expected {
+		t.Fatalf("expected clipboard:\n%q\ngot:\n%q", expected, clipText)
+	}
+}
+
+func TestMouseDragSelection_SquareSectionExample(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	m := newTestModel()
+	m.width = 120
+	m.height = 30
+	m.recalcLayout()
+
+	// Ingest 8 lines
+	for i := 0; i < 8; i++ {
+		l := fmt.Sprintf("[%d] 012345678901234567890123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", i)
+		updated, _ := m.Update(lineMsg(l))
+		m = updated.(Model)
+	}
+
+	tableStartY := m.tableDataStartY()
+
+	// Click at row 1, col 30 with Alt (Option on macOS)
+	pressX := prefixWidth + 30
+	updated, _ := m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+		Alt:    true,
+		X:      pressX,
+		Y:      tableStartY + 1,
+	})
+	m = updated.(Model)
+
+	// Drag to row 6, col 60 with Alt
+	dragX := prefixWidth + 60
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionMotion,
+		Button: tea.MouseButtonLeft,
+		Alt:    true,
+		X:      dragX,
+		Y:      tableStartY + 6,
+	})
+	m = updated.(Model)
+
+	// Verify all rows from 1 to 6 have square bounds 30..60
+	for r := 1; r <= 6; r++ {
+		sCol, eCol, ok := m.rowCharSelection(r)
+		if !ok || sCol != 30 || eCol != 60 {
+			t.Fatalf("row %d expected square selection [30..60], got [%d..%d], ok=%v", r, sCol, eCol, ok)
+		}
+	}
+	// Row 0 and row 7 must NOT have selection
+	if _, _, ok := m.rowCharSelection(0); ok {
+		t.Fatalf("row 0 should not be in selection")
+	}
+	if _, _, ok := m.rowCharSelection(7); ok {
+		t.Fatalf("row 7 should not be in selection")
+	}
+
+	tableOut := m.viewTable()
+	renderedLines := strings.Split(tableOut, "\n")
+	for r := 1; r <= 6; r++ {
+		// Verify every row in the square section has the selection background styling
+		if !strings.Contains(renderedLines[r], "6789ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+			t.Errorf("row %d expected highlighted block text", r)
+		}
+	}
+
+	// Release mouse -> auto-copies the square section
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+		Alt:    true,
+		X:      dragX,
+		Y:      tableStartY + 6,
+	})
+	m = updated.(Model)
+
+	clipText, err := clipboard.Read()
+	if err != nil {
+		t.Fatalf("clipboard read error: %v", err)
+	}
+
+	lines := strings.Split(clipText, "\n")
+	if len(lines) != 6 {
+		t.Fatalf("expected 6 lines in square section, got %d", len(lines))
+	}
+	for i, l := range lines {
+		if len([]rune(l)) != 30 {
+			t.Fatalf("line %d expected 30 chars (col 30..60), got %d (%q)", i, len([]rune(l)), l)
+		}
 	}
 }
