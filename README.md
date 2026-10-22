@@ -19,7 +19,7 @@
 - **📑 Profile-Driven Columns** — Custom YAML profiles transform unstructured serial output into structured columns using regex capture groups (`Zephyr`, `STM32`, `FreeRTOS`, `CAN Bus`).
 - **🔖 Bookmarks & Log Pinning** — Pin critical records with `b`, jump chronologically with `[` and `]`, or isolate marked logs with Bookmarked-Only view (`B`).
 - **🔍 Substring Search & Presets** — In-view substring search (`Ctrl+F`) with real-time match highlights, and a quick Filter Presets modal (`F`) with history recall (`Ctrl+P`/`Ctrl+N`).
-- **🖱️ Mouse & Native Clipboard** — Double-click to copy, click-and-drag multi-row selection, smooth trackpad scrolling, and cross-platform clipboard support (OSC 52 over SSH/tmux + native OS tools).
+- **🖱️ Mouse & Native Clipboard** — Double-click word copy, horizontal character selection, standard full-row multi-line drag, modifier-based rectangular block drag (`Option/Alt` + drag), select-all (`Ctrl+A`), smooth trackpad scrolling, and cross-platform clipboard support (OSC 52 over SSH/tmux + native OS tools).
 - **🔌 Robust Auto-Reconnect** — Automatically detects USB hotplug disconnections and re-attaches seamlessly when hardware is re-plugged.
 
 ---
@@ -122,20 +122,26 @@ oml profile export 1 > copy.yaml         # Export profile YAML to customize
 | Key | Action |
 |-----|--------|
 | `Ctrl+T` | Create new virtual tab |
-| `Tab` / `]` | Next tab (or switch pane focus in split view) |
-| `Shift+Tab` / `[` | Previous tab |
+| `Tab` | Next tab (or switch pane focus in split view) |
+| `Shift+Tab` | Previous tab |
 | `f` | Edit filter for active tab |
 | `F` | Open Filter Presets modal |
 | `Ctrl+F` | Open search prompt |
+| `Ctrl+A` | Select all records in active view |
 | `Space` | Pause / resume follow mode |
 | `t` | Cycle timestamp display: `Clock` $\rightarrow$ `Δt` $\rightarrow$ `Both` $\rightarrow$ `OFF` |
+| `J` | Jump to specific timestamp or relative offset (`-5m`, `+30s`) |
+| `m` | Add bench marker note checkpoint (`📌 MARKER`) |
 | `\|` / `_` | Toggle Vertical / Horizontal split view |
 | `S` | Toggle Synchronized Chronological Scrolling in split view |
 | `i` | Open single-line Serial TX send prompt (`Ctrl+E` cycles line ending) |
 | `I` / `Ctrl+I` | Enter **Interactive Shell Passthrough** mode (`<Tab>` completion, arrows, `^C`) |
+| `Enter` / `v` | Inspect record details modal (JSON/YAML/hex dump) |
+| `o` | Column customization modal (hide/show/resize) |
 | `b` | Pin / bookmark focused record or selected batch |
+| `[` / `]` | Jump to previous / next bookmark |
 | `B` | Toggle Bookmarked-Only view filter |
-| `y` | Yank (copy) selected row(s) to system clipboard |
+| `y` / `Ctrl+C` | Copy selection (chars, rectangular block, or lines) to clipboard |
 | `p` / `P` | Open Serial Port picker (`p`) / Profile switcher (`P`) modal |
 | `?` | Help & keyboard shortcuts modal |
 | `q` | Clean exit |
@@ -187,7 +193,7 @@ Add `oml` to your AI assistant's MCP configuration (e.g., `~/.gemini/settings.js
 | `connect_port` | Dynamically open or switch serial port, baud rate, and parsing profile. |
 | `disconnect_port` | Release the port handle (allowing external flashers like `west flash` or `pyocd` to run). |
 | `get_device_status` | Return connection state, uptime, active profile, and buffer statistics. |
-| `get_recent_logs` | Retrieve recent log lines with severity level (`DEBUG`, `INFO`, `WARN`, `ERROR`), module filter, and `since_id` checkpointing. |
+| `get_recent_logs` | Retrieve recent log lines (up to 10,000, or `all: true` for full memory history) with severity level, module filter, and `since_id` checkpointing. |
 | `search_logs` | Search log history using plain text or regular expressions. |
 | `send_serial_command` | Send commands over serial TX to the device shell and capture output. |
 | `wait_for_log` | Block until a specific boot banner, regex, or state transition occurs. |

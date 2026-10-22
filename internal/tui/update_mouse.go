@@ -127,6 +127,7 @@ func (m Model) handleMousePress(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.charSelEnd = -1
 			m.mousePressRow = absIdx
 			m.mousePressCol = col
+			m.mousePressBlock = msg.Alt || msg.Ctrl
 
 			now := time.Now()
 			if m.lastClickRow == absIdx && now.Sub(m.lastClickTime) < doubleClickThreshold {
@@ -158,6 +159,9 @@ func (m Model) handleMousePress(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	m.cursorCol = -1
 	m.charSelStart = -1
 	m.charSelEnd = -1
+	m.mousePressRow = -1
+	m.mousePressCol = -1
+	m.mousePressBlock = false
 	m.clampScroll()
 	return m, nil
 }
@@ -216,6 +220,7 @@ func (m Model) handleSplitTableMouseClick(msg tea.MouseMsg) (tea.Model, tea.Cmd)
 				m.charSelEnd = -1
 				m.mousePressRow = absIdx
 				m.mousePressCol = col
+				m.mousePressBlock = msg.Alt || msg.Ctrl
 
 				now := time.Now()
 				if m.lastClickRow == absIdx && now.Sub(m.lastClickTime) < doubleClickThreshold {
@@ -280,6 +285,7 @@ func (m Model) handleSplitTableMouseClick(msg tea.MouseMsg) (tea.Model, tea.Cmd)
 			m.charSelEnd = -1
 			m.mousePressRow = absIdx
 			m.mousePressCol = col
+			m.mousePressBlock = msg.Alt || msg.Ctrl
 
 			now := time.Now()
 			if m.lastClickRow == absIdx && now.Sub(m.lastClickTime) < doubleClickThreshold {
@@ -437,6 +443,8 @@ func (m Model) handleMouseMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		col = 0
 	}
 
+	isBlock := m.mousePressBlock || msg.Alt || msg.Ctrl
+
 	if msg.Y < dataStartY {
 		// Dragging above table viewport: auto-scroll up
 		if m.scrollOffset > 0 {
@@ -445,8 +453,25 @@ func (m Model) handleMouseMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		m.selectionEnd = m.scrollOffset
 		m.cursorCol = col
-		m.charSelEnd = col
 		m.follow = false
+		if isBlock && m.mousePressCol >= 0 {
+			m.charSelStart = m.mousePressCol
+			m.charSelEnd = col
+			top, bot := m.selectionStart, m.selectionEnd
+			if top > bot {
+				top, bot = bot, top
+			}
+			m.message = fmt.Sprintf("%d rows block selected (release to copy)", bot-top+1)
+		} else {
+			m.charSelStart = -1
+			m.charSelEnd = -1
+			top, bot := m.selectionStart, m.selectionEnd
+			if top > bot {
+				top, bot = bot, top
+			}
+			m.message = fmt.Sprintf("%d rows selected (press y or Ctrl+C to copy)", bot-top+1)
+		}
+		return m, nil
 	} else if msg.Y >= dataEndY {
 		// Dragging below table viewport: auto-scroll down
 		m.scrollOffset++
@@ -458,8 +483,25 @@ func (m Model) handleMouseMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		m.selectionEnd = endIdx
 		m.cursorCol = col
-		m.charSelEnd = col
 		m.follow = false
+		if isBlock && m.mousePressCol >= 0 {
+			m.charSelStart = m.mousePressCol
+			m.charSelEnd = col
+			top, bot := m.selectionStart, m.selectionEnd
+			if top > bot {
+				top, bot = bot, top
+			}
+			m.message = fmt.Sprintf("%d rows block selected (release to copy)", bot-top+1)
+		} else {
+			m.charSelStart = -1
+			m.charSelEnd = -1
+			top, bot := m.selectionStart, m.selectionEnd
+			if top > bot {
+				top, bot = bot, top
+			}
+			m.message = fmt.Sprintf("%d rows selected (press y or Ctrl+C to copy)", bot-top+1)
+		}
+		return m, nil
 	} else {
 		rowOffset := msg.Y - dataStartY
 		absIdx := m.scrollOffset + rowOffset
@@ -472,7 +514,6 @@ func (m Model) handleMouseMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 		m.selectionEnd = absIdx
 		m.cursorCol = col
-		m.charSelEnd = col
 		m.follow = false
 
 		if absIdx == m.mousePressRow && m.mousePressCol >= 0 {
@@ -491,21 +532,37 @@ func (m Model) handleMouseMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Drag across rows: multi-row character selection
+		if isBlock && m.mousePressCol >= 0 {
+			// Drag across rows with modifier (Option/Alt or Ctrl): rectangular block selection
+			m.selectedRow = absIdx
+			m.selectionStart = m.mousePressRow
+			m.charSelStart = m.mousePressCol
+			m.charSelEnd = col
+			top := m.selectionStart
+			bot := m.selectionEnd
+			if top > bot {
+				top, bot = bot, top
+			}
+			m.message = fmt.Sprintf("%d rows block selected (release to copy)", bot-top+1)
+			return m, nil
+		}
+
+		// Drag across rows without modifier: select entire rows like a normal text editor
 		m.selectedRow = absIdx
 		m.selectionStart = m.mousePressRow
-		m.charSelStart = m.mousePressCol
-		m.charSelEnd = col
+		m.selectionEnd = absIdx
+		m.charSelStart = -1
+		m.charSelEnd = -1
 		top := m.selectionStart
 		bot := m.selectionEnd
 		if top > bot {
 			top, bot = bot, top
 		}
-		m.message = fmt.Sprintf("%d rows selected (release to copy)", bot-top+1)
+		m.message = fmt.Sprintf("%d rows selected (press y or Ctrl+C to copy)", bot-top+1)
 		return m, nil
 	}
 	if start, end := m.selectionRange(); start >= 0 && end >= 0 {
-		m.message = m.selectionMessage(end-start+1, "press y to copy")
+		m.message = m.selectionMessage(end-start+1, "press y or Ctrl+C to copy")
 	}
 	return m, nil
 }
@@ -531,7 +588,7 @@ func (m Model) handleMouseRelease(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	} else if start, end := m.selectionRange(); start >= 0 && end >= 0 {
 		m.selectedRow = m.selectionEnd
-		m.message = m.selectionMessage(end-start+1, "press y to copy")
+		m.message = m.selectionMessage(end-start+1, "press y or Ctrl+C to copy")
 	} else {
 		m.selectionStart = -1
 		m.selectionEnd = -1
@@ -541,6 +598,7 @@ func (m Model) handleMouseRelease(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	m.mousePressRow = -1
 	m.mousePressCol = -1
+	m.mousePressBlock = false
 	m.clampScroll()
 	return m, nil
 }
@@ -639,6 +697,9 @@ func (m Model) handleSelectAll() (tea.Model, tea.Cmd) {
 	m.selectedRow = m.selectionEnd
 	m.charSelStart = -1
 	m.charSelEnd = -1
+	m.mousePressRow = -1
+	m.mousePressCol = -1
+	m.mousePressBlock = false
 	count := len(m.visible)
 	if count > 1 {
 		m.message = m.selectionMessage(count, "press y or Ctrl+C to copy")

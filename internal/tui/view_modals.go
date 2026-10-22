@@ -537,6 +537,7 @@ func (m Model) viewHelpModal() string {
 		renderItem("Click row", "Select row & pause", colWidth),
 		renderItem("Shift+↑/↓", "Extend line selection", colWidth),
 		renderItem("Drag mouse", "Select text or rows", colWidth),
+		renderItem("Alt+Drag", "Rectangular block select", colWidth),
 		renderItem("2x Click", "Copy word to clipboard", colWidth),
 		renderHeader("ACTIONS & CONTROLS", colWidth),
 		renderItem("I, ^I", "Shell passthrough (Tab/TX)", colWidth),

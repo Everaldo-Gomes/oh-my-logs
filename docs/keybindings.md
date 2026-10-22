@@ -6,98 +6,112 @@ A complete reference of all keyboard shortcuts, mouse gestures, and interactive 
 
 ## 1. Virtual Tabs & Panes
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+T` | Create a new virtual tab (prompts for filter expression). |
-| `Tab` | Switch to next tab (or switch focused pane in split view). |
-| `Shift+Tab` | Switch to previous tab. |
-| `1` .. `9` | Jump directly to tab index 1 through 9. |
-| `Ctrl+W` | Close active virtual tab (preserves default tab). |
-| `\|` (pipe) | Toggle Vertical Dual-Pane Split view (side-by-side). |
-| `_` (underscore) | Toggle Horizontal Dual-Pane Split view (stacked). |
-| `w` | Switch focus between Left/Right (or Top/Bottom) pane. |
-| `S` | Toggle Synchronized Chronological Scrolling between panes. |
+| Key | Action | Description |
+|-----|--------|-------------|
+| `Ctrl+T` | Create New Tab | Prompts for filter expression and creates a concurrent virtual tab. |
+| `Tab` | Next Tab / Switch Pane | Cycles to next tab, or toggles pane focus in split view. |
+| `Shift+Tab` | Previous Tab | Cycles to previous tab. |
+| `1` .. `9` | Jump to Tab N | Jump directly to tab index 1 through 9. |
+| `Ctrl+W` | Close Tab | Closes active virtual tab (preserves default tab). |
+| `\|` (pipe) | Toggle Vertical Split | Splits terminal into side-by-side Left and Right panes. |
+| `_` (underscore) | Toggle Horizontal Split | Splits terminal into stacked Top and Bottom panes. |
+| `w` | Switch Pane Focus | Toggles active keyboard/mouse focus between panes. |
+| `S` | Toggle Sync Scroll | Toggles Synchronized Chronological Scrolling between panes. |
 
 ---
 
-## 2. Navigation & Scrolling
+## 2. Navigation, Scrolling & 2D Viewport
 
-| Key | Action |
-|-----|--------|
-| `↑` / `k` | Scroll up one row. |
-| `↓` / `j` | Scroll down one row. |
-| `Wheel` / Trackpad | Smooth vertical scrolling. |
-| `PgUp` / `PgDn` | Scroll one page up / down. |
-| `Ctrl+U` / `Ctrl+D` | Scroll half page up / down. |
-| `g` / `Home` | Jump to top (oldest record in buffer, auto-pauses follow). |
-| `G` / `End` | Jump to bottom (newest record in buffer, resumes follow). |
+| Key | Action | Description |
+|-----|--------|-------------|
+| `↑` / `k` | Scroll Up | Move selection or scroll up one row. |
+| `↓` / `j` | Scroll Down | Move selection or scroll down one row. |
+| `←` / `h` | Cursor Left | Move character cursor left; auto-pans viewport when reaching margin. |
+| `→` / `l` | Cursor Right | Move character cursor right; auto-pans viewport when reaching margin. |
+| `{` / `}` | Pan Viewport Left / Right | Shift 2D horizontal viewport column window left / right. |
+| `Wheel` / Trackpad | Smooth Scroll | Smooth vertical scrolling; trackpad tilt / Shift+Wheel pans horizontally. |
+| `PgUp` / `PgDn` | Page Up / Down | Scroll one viewport page up / down. |
+| `Ctrl+U` / `Ctrl+D` | Half-Page Up / Down | Scroll half viewport page up / down. |
+| `g` / `Home` | Jump to Top | Jump to oldest record in buffer (auto-pauses follow). |
+| `G` / `End` | Jump to Bottom | Jump to newest record in buffer (resumes follow). |
+| `J` | Jump to Timestamp | Open interactive timestamp jump prompt (`-5m`, `+30s`, `14:20:00`). |
 
 ---
 
 ## 3. Search & Filter
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+F` | Open in-view substring search prompt. |
-| `Enter` / `↓` | Next search match (in search prompt). |
-| `↑` | Previous search match (in search prompt). |
-| `n` / `N` | Next / previous search match (in normal mode). |
-| `f` | Edit filter for current tab (auto-names tab to filter). |
-| `F` (Shift+f) | Open Filter Presets modal. |
-| `Ctrl+P` / `↑` | Previous filter from history (in filter prompt). |
-| `Ctrl+N` / `↓` | Next filter from history (in filter prompt). |
-| `Ctrl+V` | Paste clipboard text directly into search or filter prompt. |
-| `Esc` | Clear search highlighting or cancel input prompt. |
+| Key | Action | Description |
+|-----|--------|-------------|
+| `Ctrl+F` | Open Search Prompt | Search logs with real-time matching and inverted focus highlight (`▶`). |
+| `Enter` / `↓` | Next Search Match | Jump to next search match (while search input active). |
+| `↑` | Previous Search Match | Jump to previous search match (while search input active). |
+| `n` / `N` | Next / Prev Match | Navigate through search matches in normal viewing mode. |
+| `f` | Edit Tab Filter | Edit Logcat-style filter for active tab (`field:val -exclude`). |
+| `F` / `Ctrl+P` | Filter Presets Modal | Open saved presets picker modal; press `Ctrl+S` to save current filter. |
+| `Ctrl+P` / `↑` | Previous Filter History | Recall previous filter query from history (in filter prompt). |
+| `Ctrl+N` / `↓` | Next Filter History | Navigate forward in filter query history (in filter prompt). |
+| `Ctrl+V` | Paste Clipboard | Paste text from system clipboard into search or filter prompt. |
+| `Esc` | Cancel / Clear Search | Clear search highlighting or dismiss active input prompt. |
 
 ---
 
-## 4. Timing & Delta-Time (`Δt`)
+## 4. Selection, Copying & Clipboard
 
-| Key | Action |
-|-----|--------|
-| `t` | Cycle timestamp display: `Clock` $\rightarrow$ `Δt` $\rightarrow$ `Both` $\rightarrow$ `OFF`. |
-| `Mouse Drag` | Select batch of rows; displays live elapsed $\Delta t$ on bottom bar. |
-| `Shift+↑` / `Shift+↓` | Expand selection across rows; displays live elapsed $\Delta t$ on bottom bar. |
-
----
-
-## 5. Selection, Copy & Bookmarks
-
-| Key | Action |
-|-----|--------|
-| `Click` | Select row and auto-pause follow. |
-| `Double Click` | Instant copy of raw row to system clipboard. |
-| `y` | Yank (copy) selected row or multi-row range to clipboard. |
-| `Y` | Yank raw unformatted log record. |
-| `b` | Toggle bookmark (pin) on focused row or selected batch. |
-| `]` | Jump to next bookmarked record. |
-| `[` | Jump to previous bookmarked record. |
-| `B` (Shift+b) | Toggle "Bookmarked Only" view filter. |
-| `Alt+B` | Clear all bookmarks across the buffer. |
+| Key / Gesture | Action | Description |
+|---------------|--------|-------------|
+| `Click` | Select Row | Selects single row, places character cursor, and pauses follow. |
+| `2x Click` | Copy Word | Double-clicking copies the clicked word / token to clipboard. |
+| `Horizontal Drag` | Select Characters | Dragging horizontally on same row selects characters; auto-copies on release. |
+| `Vertical Drag` | Select Full Rows | Dragging across rows without modifier selects entire lines; copy with `Ctrl+C` or `y`. |
+| `Option+Drag` (Mac)<br>`Alt+Drag` / `Ctrl+Drag` | Rectangular Block Select | Dragging with modifier selects a rectangular column/square block across rows; auto-copies on release! |
+| `Shift+←` / `Shift+→` | Select Characters | Extend character selection left or right with keyboard. |
+| `Shift+↑` / `Shift+↓` (`K` / `J`)| Extend Line Selection | Expand multi-line selection up or down; calculates live $\Delta t$ on status bar. |
+| `Ctrl+A` | Select All Records | Selects all records in current view; ready to copy with `y` or `Ctrl+C`. |
+| `y` / `Ctrl+C` | Copy Selection | Copies active character span, rectangular block, or selected lines to clipboard. |
+| `Y` | Copy Raw Record | Copies raw unformatted log record under cursor. |
+| `Esc` | Clear Selection | First press clears character selection; second press clears row selection. |
 
 ---
 
-## 6. Device, Replay & Actions
+## 5. Timing, Delta-Time (`Δt`) & Bench Markers
 
-| Key | Action |
-|-----|--------|
-| `Space` | Pause / resume stream follow. |
-| `i` | Open interactive Serial TX send prompt. |
-| `Ctrl+E` | Cycle serial line ending (`CRLF`, `LF`, `CR`, `None`) in TX prompt. |
-| `c` | Clear in-memory log buffer across all tabs. |
-| `s` | Save all raw buffer records to a timestamped `.log` file. |
-| `p` | Open Serial Port & Baud rate picker modal. |
-| `P` (Shift+p) | Open Profile switcher modal (re-parses buffer). |
-| `r` | Reconnect current serial port. |
-| `?` | Open Help & Keyboard Shortcuts popup. |
-| `q` / `Ctrl+C` | Clean exit. |
+| Key | Action | Description |
+|-----|--------|-------------|
+| `t` | Cycle Timestamp Mode | Cycle: `Clock` $\rightarrow$ `Δt` $\rightarrow$ `Both` $\rightarrow$ `OFF`. |
+| `m` / `M` | Add Bench Marker | Inject custom timestamped checkpoint note into stream (`📌 MARKER`). |
+| `Shift+↑/↓` or `Drag` | Stopwatch Delta | Real-time interval calculation across selection (`• 7 rows selected · Δt: +160.0ms`). |
 
 ---
 
-## 7. Easter Egg Mini-Game (`G`)
+## 6. Bookmarks & Log Pinning
 
-| Key | Action |
-|-----|--------|
-| `G` (Shift+g) | Launch embedded Pong mini-game during long firmware builds/flashes. |
-| `↑` / `↓` or `W` / `S` | Move paddle. |
-| `Esc` / `q` | Exit game and return to logs. Background serial data remains fully buffered. |
+| Key | Action | Description |
+|-----|--------|-------------|
+| `b` | Toggle Bookmark | Pin/unpin focused row or entire multi-selected batch. |
+| `]` | Next Bookmark | Jump chronologically to next pinned record. |
+| `[` | Previous Bookmark | Jump chronologically to previous pinned record. |
+| `B` (Shift+b) | Bookmarked-Only View | Toggle filter showing only pinned records. |
+| `Alt+B` | Clear All Bookmarks | Remove all pinned bookmarks across the buffer. |
+
+---
+
+## 7. Device, Profiles & Modals
+
+| Key | Action | Description |
+|-----|--------|-------------|
+| `Space` | Pause / Follow Stream | Toggle auto-scroll follow mode on new incoming logs. |
+| `Enter` / `v` | Inspect Row Detail | Open modal showing all fields, formatted JSON/XML/YAML, and hex dump. |
+| `i` / `:` | Single-line Serial TX | Open command send prompt with line endings (`Ctrl+E`) and history. |
+| `I` / `Ctrl+I` | Shell Passthrough | Enter interactive raw shell mode (`<Tab>` completion, arrows, `^C`). |
+| `x` / `X` | Switch Display Format | Toggle row rendering: `Parsed` $\rightarrow$ `Raw` $\rightarrow$ `Hex Dump` $\rightarrow$ `Binary Bits`. |
+| `o` / `ctrl+o` | Column Customization | Open interactive modal to toggle column visibility and adjust widths. |
+| `p` | Serial Port & Baud Picker| Open port picker modal to change device or baud rate. |
+| `P` (Shift+p) | Profile Switcher | Open profile switcher modal to re-parse logs under different schema. |
+| `r` | Reconnect Port / Restart| Re-open serial port connection or restart custom process stream. |
+| `D` | Disconnect Port | Release serial port handle (freeing UART for `west flash` or `pyocd`). |
+| `,` / `C` | Settings & Preferences | Open settings modal (themes, direct-to-disk recording, buffer capacity). |
+| `s` | Save Log | Save entire buffer to timestamped `.log` file on disk. |
+| `c` | Clear Buffer | Reset in-memory log buffer across all tabs. |
+| `?` | Help Modal | Open quick reference cheat sheet modal. |
+| `Ctrl+G` | Mini-Games | Embedded retro games (Snake, Pong, etc.) during long compilation/flashes. |
+| `q` | Quit | Cleanly exit `oml`. |
