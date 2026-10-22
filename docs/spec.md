@@ -1255,4 +1255,31 @@ Since the original MVP specification, `oh-my-logs` has evolved into a high-perfo
 
 ### 34.9 Theming & Visual Aesthetics
 - **Theme Palette Engine**: Fully customizable color themes (Dark Slate, Nord, Monokai, Gruvbox, Tokyo Night, Catppuccin) configurable via settings modal (`,` or `C`).
-- **Terminal Mini-Games**: Integrated Easter eggs (`snake`, etc.) in `internal/game` for idle compile and test waits.
+- **Terminal Mini-Games**: Integrated Easter eggs (`snake`, `pong`, etc.) in `internal/game` for idle compile and test waits (`Ctrl+G`).
+
+### 34.10 Interactive Column Customization & Visibility (`o`)
+- **Column Customization Modal**: Hitting `o` presents a modal displaying all discovered columns for the active profile.
+- **Dynamic Resizing & Hiding**: Columns can be toggled hidden/visible and resized interactively, persisting configurations in local settings.
+
+### 34.11 Timestamp Jump & Time Seeking (`J`)
+- **Interactive Seeking**: Hitting `J` opens an interactive seeking bar supporting relative offsets (`-5m`, `+30s`, `1h ago`) and absolute times (`14:20:00`, `2026-09-22 14:20:00`).
+- **Binary Chronological Scan**: Centers the viewport on the exact or closest timestamp match across millions of records.
+
+### 34.12 Live Stream Bench Markers (`m`)
+- **Annotation Checkpoints**: Pressing `m` injects an annotated marker line (`📌 MARKER`) with current timestamp into the stream.
+- **Milestone Navigation**: Markers persist in the log buffer and can be jumped to and filtered alongside normal logs.
+
+### 34.13 Interactive Shell Passthrough Mode (`I` / `Ctrl+I`)
+- **Raw Bidirectional Console**: Forwards keystrokes directly to the serial device, providing full VT100 shell interoperability (`<Tab>` completion, arrow history, and `^C` interrupt forwarding).
+- **Graceful Exit**: `Ctrl+D`, `Ctrl+]`, or `Esc` exits passthrough and returns to normal TUI browsing.
+
+### 34.14 Native Model Context Protocol (MCP) Server (`oml mcp`)
+- **AI Hardware Assistant Coexistence**: Exposes port management, log querying, watchdog triggers, and serial transmission over local IPC to AI tools like Gemini CLI and Claude Desktop.
+- **Live Memory Buffer Sharing**: Automatically hydrates MCP queries with active TUI ring-buffer records and handles transparent port handover.
+
+### 34.15 Select All (`Ctrl+A`) & Advanced Mouse Drag Selection
+- **Select All**: `Ctrl+A` instantly selects all records in the active view, displaying live batch count and ready to copy via `Ctrl+C` or `y`.
+- **Double-Click Word Copy**: Double-clicking on any token copies the word to the clipboard.
+- **Horizontal Character Drag**: Real-time substring character selection on the same row with auto-copy on release.
+- **Normal Multi-Row Drag**: Standard text editor line selection across rows (`row1\nrow2\nrow3`), highlighted across full row backgrounds and ready to copy with `Ctrl+C` or `y`.
+- **Modifier Column Drag (`Option/Alt` or `Ctrl` + Drag)**: Rectangular column / square section selection across rows, highlighting only the column bounds `[minCol : maxCol]` and auto-copying the block on release.

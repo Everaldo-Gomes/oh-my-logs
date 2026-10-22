@@ -261,8 +261,9 @@ type Model struct {
 	lastClickTime  time.Time
 	lastClickRow   int
 	lastClickCol   int
-	mousePressRow  int
-	mousePressCol  int
+	mousePressRow   int
+	mousePressCol   int
+	mousePressBlock bool // true if mouse drag started with modifier (Alt/Option or Ctrl)
 
 	// Scrollbar mouse drag state
 	isDraggingVScroll bool // true while left mouse button is dragging vertical scrollbar

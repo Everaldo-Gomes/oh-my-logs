@@ -395,6 +395,83 @@ func TestMouseDragSelection_CharacterSelection(t *testing.T) {
 	}
 }
 
+func TestMouseDragSelection_MultiLineNormalRows(t *testing.T) {
+	m := newTestModel()
+	m.width = 120
+	m.height = 30
+	m.recalcLayout()
+
+	lines := []string{
+		"first line of log records",
+		"second intermediate log line",
+		"third concluding line here",
+	}
+	for _, l := range lines {
+		updated, _ := m.Update(lineMsg(l))
+		m = updated.(Model)
+	}
+
+	tableStartY := m.tableDataStartY()
+
+	// 1. Mouse press on line 0 without modifier
+	pressX := prefixWidth + 6
+	updated, _ := m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+		X:      pressX,
+		Y:      tableStartY,
+	})
+	m = updated.(Model)
+
+	// 2. Normal drag down to line 2 without modifier -> selects entire rows
+	dragX := prefixWidth + 16
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionMotion,
+		Button: tea.MouseButtonLeft,
+		X:      dragX,
+		Y:      tableStartY + 2,
+	})
+	m = updated.(Model)
+
+	if m.selectionStart != 0 || m.selectionEnd != 2 {
+		t.Fatalf("expected selection range 0..2, got %d..%d", m.selectionStart, m.selectionEnd)
+	}
+	// Normal row drag must NOT set charSel bounds
+	if m.charSelStart != -1 || m.charSelEnd != -1 {
+		t.Fatalf("expected char bounds -1..-1 for normal row selection, got %d..%d", m.charSelStart, m.charSelEnd)
+	}
+	if !containsSub(m.message, "3 rows selected") {
+		t.Fatalf("expected message to show 3 rows selected, got %q", m.message)
+	}
+
+	// 3. Mouse release keeps rows selected without auto-copying
+	updated, _ = m.Update(tea.MouseMsg{
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+		X:      dragX,
+		Y:      tableStartY + 2,
+	})
+	m = updated.(Model)
+
+	if m.selectionStart != 0 || m.selectionEnd != 2 {
+		t.Fatalf("expected selection range to persist after release, got %d..%d", m.selectionStart, m.selectionEnd)
+	}
+
+	// 4. Pressing Ctrl+C copies the full 3 rows
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+
+	clipText, err := clipboard.Read()
+	if err != nil {
+		t.Fatalf("clipboard read error: %v", err)
+	}
+
+	expected := "first line of log records\nsecond intermediate log line\nthird concluding line here"
+	if clipText != expected {
+		t.Fatalf("expected clipboard:\n%q\ngot:\n%q", expected, clipText)
+	}
+}
+
 func TestMouseDragSelection_MultiLineRespectingRows(t *testing.T) {
 	m := newTestModel()
 	m.width = 120
@@ -413,21 +490,23 @@ func TestMouseDragSelection_MultiLineRespectingRows(t *testing.T) {
 
 	tableStartY := m.tableDataStartY()
 
-	// 1. Mouse press on line 0 at col 6 ('l' of "line of log records")
+	// 1. Mouse press on line 0 at col 6 with Alt: true (Option on Mac)
 	pressX := prefixWidth + 6
 	updated, _ := m.Update(tea.MouseMsg{
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
+		Alt:    true,
 		X:      pressX,
 		Y:      tableStartY,
 	})
 	m = updated.(Model)
 
-	// 2. Drag down to line 2 at col 16 ('c' of "concluding line here")
+	// 2. Drag down to line 2 at col 16 with Alt: true -> rectangular block selection
 	dragX := prefixWidth + 16
 	updated, _ = m.Update(tea.MouseMsg{
 		Action: tea.MouseActionMotion,
 		Button: tea.MouseButtonLeft,
+		Alt:    true,
 		X:      dragX,
 		Y:      tableStartY + 2,
 	})
@@ -444,6 +523,7 @@ func TestMouseDragSelection_MultiLineRespectingRows(t *testing.T) {
 	updated, _ = m.Update(tea.MouseMsg{
 		Action: tea.MouseActionRelease,
 		Button: tea.MouseButtonLeft,
+		Alt:    true,
 		X:      dragX,
 		Y:      tableStartY + 2,
 	})
@@ -483,21 +563,23 @@ func TestMouseDragSelection_MultiLineUpward(t *testing.T) {
 
 	tableStartY := m.tableDataStartY()
 
-	// 1. Mouse press on line 2 at col 12 ('e' of "ending line")
+	// 1. Mouse press on line 2 at col 12 with Option/Alt ('e' of "ending line")
 	pressX := prefixWidth + 12
 	updated, _ := m.Update(tea.MouseMsg{
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
+		Alt:    true,
 		X:      pressX,
 		Y:      tableStartY + 2,
 	})
 	m = updated.(Model)
 
-	// 2. Drag UP to line 0 at col 6 ('b' of "beginning line")
+	// 2. Drag UP to line 0 at col 6 with Option/Alt ('b' of "beginning line")
 	dragX := prefixWidth + 6
 	updated, _ = m.Update(tea.MouseMsg{
 		Action: tea.MouseActionMotion,
 		Button: tea.MouseButtonLeft,
+		Alt:    true,
 		X:      dragX,
 		Y:      tableStartY,
 	})
@@ -511,6 +593,7 @@ func TestMouseDragSelection_MultiLineUpward(t *testing.T) {
 	updated, _ = m.Update(tea.MouseMsg{
 		Action: tea.MouseActionRelease,
 		Button: tea.MouseButtonLeft,
+		Alt:    true,
 		X:      dragX,
 		Y:      tableStartY,
 	})
@@ -546,21 +629,23 @@ func TestMouseDragSelection_SquareSectionExample(t *testing.T) {
 
 	tableStartY := m.tableDataStartY()
 
-	// Click at row 1, col 30
+	// Click at row 1, col 30 with Alt (Option on macOS)
 	pressX := prefixWidth + 30
 	updated, _ := m.Update(tea.MouseMsg{
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
+		Alt:    true,
 		X:      pressX,
 		Y:      tableStartY + 1,
 	})
 	m = updated.(Model)
 
-	// Drag to row 6, col 60
+	// Drag to row 6, col 60 with Alt
 	dragX := prefixWidth + 60
 	updated, _ = m.Update(tea.MouseMsg{
 		Action: tea.MouseActionMotion,
 		Button: tea.MouseButtonLeft,
+		Alt:    true,
 		X:      dragX,
 		Y:      tableStartY + 6,
 	})
@@ -594,6 +679,7 @@ func TestMouseDragSelection_SquareSectionExample(t *testing.T) {
 	updated, _ = m.Update(tea.MouseMsg{
 		Action: tea.MouseActionRelease,
 		Button: tea.MouseButtonLeft,
+		Alt:    true,
 		X:      dragX,
 		Y:      tableStartY + 6,
 	})
